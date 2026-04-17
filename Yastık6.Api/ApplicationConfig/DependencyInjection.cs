@@ -35,19 +35,18 @@ public static class DependencyInjection
         services.AddHostedService<PriceSnapshotRefresher>();
         
         // --- HAREM CLIENT CONFIGURATION ---
-        var haremBaseUrl = configuration["Harem:BaseUrl"] ?? throw new InvalidOperationException("Harem:BaseUrl is missing.");
-        var host = configuration["Harem:Host"] ?? throw new InvalidOperationException("Harem:Host missing.");
-        var apiKey = configuration["Harem:ApiKey"] ?? throw new InvalidOperationException("Harem:ApiKey missing.");
+        var haremBaseUrl = (configuration["Harem:BaseUrl"] ?? throw new InvalidOperationException("Harem:BaseUrl is missing.")).Trim();
+        var host = (configuration["Harem:Host"] ?? throw new InvalidOperationException("Harem:Host missing.")).Trim();
+        var apiKey = (configuration["Harem:ApiKey"] ?? throw new InvalidOperationException("Harem:ApiKey missing.")).Trim();
 
         services.AddHttpClient<IHaremClient, HaremClient>(client =>
-        {
-            client.BaseAddress = new Uri(haremBaseUrl);
-            client.DefaultRequestHeaders.TryAddWithoutValidation("x-rapidapi-host", host);
-            client.DefaultRequestHeaders.TryAddWithoutValidation("x-rapidapi-key", apiKey);
+            {
+                client.BaseAddress = new Uri(haremBaseUrl);
+                client.DefaultRequestHeaders.TryAddWithoutValidation("x-rapidapi-host", host);
+                client.DefaultRequestHeaders.TryAddWithoutValidation("x-rapidapi-key", apiKey);
+                client.Timeout = TimeSpan.FromSeconds(30);
+            })
             
-            // [KRİTİK DÜZELTME]: Harem'in yavaş cevaplarını tolere etmek için 10 saniyeden 30 saniyeye çıkarıldı!
-            client.Timeout = TimeSpan.FromSeconds(30);
-        })
         .AddTransientHttpErrorPolicy(policyBuilder => 
             policyBuilder.WaitAndRetryAsync(
                 retryCount: 3, 
