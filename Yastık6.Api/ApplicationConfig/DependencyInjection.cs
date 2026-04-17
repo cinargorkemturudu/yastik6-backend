@@ -35,9 +35,15 @@ public static class DependencyInjection
         services.AddHostedService<PriceSnapshotRefresher>();
         
         // --- HAREM CLIENT CONFIGURATION ---
-        var haremBaseUrl = (configuration["Harem:BaseUrl"] ?? throw new InvalidOperationException("Harem:BaseUrl is missing.")).Trim();
-        var host = (configuration["Harem:Host"] ?? throw new InvalidOperationException("Harem:Host missing.")).Trim();
-        var apiKey = (configuration["Harem:ApiKey"] ?? throw new InvalidOperationException("Harem:ApiKey missing.")).Trim();
+        // --- HAREM CLIENT CONFIGURATION ---
+        // NÜKLEER ASCII TEMİZLİĞİ: Sadece standart İngilizce klavye karakterlerine (ASCII 32-126 arası) izin ver!
+        var haremBaseUrlRaw = configuration["Harem:BaseUrl"] ?? throw new InvalidOperationException("Harem:BaseUrl is missing.");
+        var hostRaw = configuration["Harem:Host"] ?? throw new InvalidOperationException("Harem:Host missing.");
+        var apiKeyRaw = configuration["Harem:ApiKey"] ?? throw new InvalidOperationException("Harem:ApiKey missing.");
+
+        var haremBaseUrl = new string(haremBaseUrlRaw.Where(c => c >= 32 && c <= 126).ToArray());
+        var host = new string(hostRaw.Where(c => c >= 32 && c <= 126).ToArray());
+        var apiKey = new string(apiKeyRaw.Where(c => c >= 32 && c <= 126).ToArray());
 
         services.AddHttpClient<IHaremClient, HaremClient>(client =>
             {
