@@ -7,26 +7,26 @@ public static class HaremDataMapper
 {
     private static readonly CultureInfo TrCulture = new("tr-TR");
 
-    
-    private static readonly Dictionary<string, (string Type, string TargetCode)> AllowedAssets = new()
+    // [KRİTİK DEĞİŞİKLİK]: Tuple yapısı (Type, TargetCode, PrettyName) olarak 3 parametreli hale getirildi.
+    private static readonly Dictionary<string, (string Type, string TargetCode, string PrettyName)> AllowedAssets = new()
     {
-        { "GRAM ALTIN", ("METAL", "GRAM_ALTIN") },
-        { "Has Altın", ("METAL", "HAS_ALTIN") },
-        { "GÜMÜŞ TL", ("METAL", "GUMUS_TL") },     
-        { "22 AYAR", ("METAL", "AYAR_22") },       
-        { "14 AYAR", ("METAL", "AYAR_14") },      
-        { "YENİ ÇEYREK", ("METAL", "YENI_CEYREK") }, 
-        { "ESKİ ÇEYREK", ("METAL", "ESKI_CEYREK") }, 
-        { "YENİ YARIM", ("METAL", "YENI_YARIM") },   
-        { "ESKİ YARIM", ("METAL", "ESKI_YARIM") },  
-        { "YENİ TAM", ("METAL", "YENI_TAM") },     
-        { "ESKİ TAM", ("METAL", "ESKI_TAM") },      
-        { "YENİ ATA", ("METAL", "YENI_ATA") },       
-        { "ESKİ ATA", ("METAL", "ESKI_ATA") },       
-        { "YENİ GREMSE", ("METAL", "YENI_GREMSE") }, 
-        { "ESKİ GREMSE", ("METAL", "ESKI_GREMSE") }, 
-        { "ONS", ("INDICATOR", "ONS") },
-        { "GÜMÜŞ ONS", ("INDICATOR", "GUMUS_ONS") }  
+        { "GRAM ALTIN", ("METAL", "GRAM_ALTIN", "Gram Altın") },
+        { "Has Altın", ("METAL", "HAS_ALTIN", "Has Altın") },
+        { "GÜMÜŞ TL", ("METAL", "GUMUS_TL", "Gümüş (TL)") },     
+        { "22 AYAR", ("METAL", "AYAR_22", "22 Ayar Altın") },       
+        { "14 AYAR", ("METAL", "AYAR_14", "14 Ayar Altın") },      
+        { "YENİ ÇEYREK", ("METAL", "YENI_CEYREK", "Yeni Çeyrek") }, 
+        { "ESKİ ÇEYREK", ("METAL", "ESKI_CEYREK", "Eski Çeyrek") }, 
+        { "YENİ YARIM", ("METAL", "YENI_YARIM", "Yeni Yarım") },   
+        { "ESKİ YARIM", ("METAL", "ESKI_YARIM", "Eski Yarım") },  
+        { "YENİ TAM", ("METAL", "YENI_TAM", "Yeni Tam") },     
+        { "ESKİ TAM", ("METAL", "ESKI_TAM", "Eski Tam") },      
+        { "YENİ ATA", ("METAL", "YENI_ATA", "Yeni Ata") },       
+        { "ESKİ ATA", ("METAL", "ESKI_ATA", "Eski Ata") },       
+        { "YENİ GREMSE", ("METAL", "YENI_GREMSE", "Yeni Gremse") }, 
+        { "ESKİ GREMSE", ("METAL", "ESKI_GREMSE", "Eski Gremse") }, 
+        { "ONS", ("INDICATOR", "ONS", "Ons Altın ($)") },
+        { "GÜMÜŞ ONS", ("INDICATOR", "GUMUS_ONS", "Gümüş Ons ($)") }  
     };
 
     public static LatestPriceResponse? MapToResponse(HaremClient.HaremItemRaw item)
@@ -41,15 +41,14 @@ public static class HaremDataMapper
             return null;
         }
 
-        // Doğrudan bizim belirlediğimiz %100 güvenli kodu alıyoruz
         var discoveryCode = assetInfo.TargetCode;
         var assetType = assetInfo.Type;
+        var prettyName = assetInfo.PrettyName; // <-- Arayüze gidecek şık isim
         
         string formattedBid = bid.ToString("N2", CultureInfo.InvariantCulture);
         string formattedAsk = ask.ToString("N2", CultureInfo.InvariantCulture);
 
         var asOfUtc = ParseTurkishDate(item.LastUpdate);
-        
         var nowTr = DateTimeOffset.UtcNow.AddHours(3); 
         bool isWeekendTr = nowTr.DayOfWeek == DayOfWeek.Saturday || nowTr.DayOfWeek == DayOfWeek.Sunday;
         
@@ -65,7 +64,7 @@ public static class HaremDataMapper
 
         return new LatestPriceResponse(
             ProductCode: discoveryCode,
-            Name: discoveryCode, 
+            Name: prettyName, // [KRİTİK]: Artık "ESKI_CEYREK" yerine "Eski Çeyrek" dönüyor.
             Type: assetType,
             Bid: bid,
             Ask: ask,

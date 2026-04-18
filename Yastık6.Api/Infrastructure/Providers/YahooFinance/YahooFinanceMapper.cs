@@ -6,7 +6,6 @@ namespace Yastık6.Api.Infrastructure.Providers.YahooFinance;
 
 public static class YahooFinanceMapper
 {
-    // Sadece varlık kodları ve türleri kaldı
     private static readonly Dictionary<string, string> YahooRegistry = new()
     {
         { "USDTRY=X", "CURRENCY" },
@@ -19,6 +18,36 @@ public static class YahooFinanceMapper
         { "BTC-USD", "CRYPTO" },
         { "ETH-USD", "CRYPTO" }
     };
+
+    // [YENİ EKLENDİ]: Flutter'daki zeki isim düzenleyiciyi Backend'e aldık!
+    private static string GetPrettyName(string code)
+    {
+        var overrides = new Dictionary<string, string>
+        {
+            { "USDTRY=X", "Amerikan Doları" },
+            { "EURTRY=X", "Euro" },
+            { "GBPTRY=X", "İngiliz Sterlini" },
+            { "CHFTRY=X", "İsviçre Frangı" },
+            { "CADTRY=X", "Kanada Doları" },
+            { "AUDTRY=X", "Avustralya Doları" },
+            { "JPYTRY=X", "Japon Yeni" },
+            { "BTC-USD", "Bitcoin" },
+            { "ETH-USD", "Ethereum" }
+        };
+
+        if (overrides.TryGetValue(code, out var pretty)) return pretty;
+
+        string cleanCode = code.Replace("=X", "").Replace(".IS", "");
+
+        if (cleanCode.Length == 6 && cleanCode.EndsWith("TRY"))
+        {
+            cleanCode = cleanCode.Substring(0, 3);
+        }
+
+        // TitleCase işlemi ("GARANTİ BANKASI" -> "Garanti Bankası")
+        var textInfo = new CultureInfo("tr-TR").TextInfo;
+        return textInfo.ToTitleCase(cleanCode.Replace("_", " ").Replace("-", " ").ToLower());
+    }
 
     public static LatestPriceResponse? MapToResponse(string symbolCode, Security security, string symbolType, string providerName)
     {
@@ -44,43 +73,39 @@ public static class YahooFinanceMapper
         string format = finalType == "CURRENCY" ? "N4" : "N2";
         var asOfUtc = DateTimeOffset.UtcNow;
         
-        // --- AKILLI MOTOR: Geçerlilik Tarihi (ValidUntilUtc) Hesaplama ---
         DateTimeOffset validUntilUtc;
         var nowUtc = DateTimeOffset.UtcNow;
-        var nowTr = nowUtc.AddHours(3); // Borsa saatleri için Türkiye Saati
+        var nowTr = nowUtc.AddHours(3);
 
         if (finalType == "CRYPTO")
         {
-            // Kripto 7/24 aktiftir
             validUntilUtc = nowUtc.AddMinutes(5);
         }
         else if (finalType == "CURRENCY")
         {
-            // Global Forex: Cumartesi tam gün, Pazar 21:00 UTC'ye kadar kapalıdır.
             bool isForexWeekend = nowUtc.DayOfWeek == DayOfWeek.Saturday || 
                                   (nowUtc.DayOfWeek == DayOfWeek.Sunday && nowUtc.Hour < 21);
             
             validUntilUtc = isForexWeekend 
-                ? nowUtc.AddDays(1) // Hafta sonu boyunca uygulama uyarı vermesin
-                : nowUtc.AddMinutes(5); // Hafta içi 5 dakika tolerans
+                ? nowUtc.AddDays(1) 
+                : nowUtc.AddMinutes(5);
         }
         else // STOCK (BIST)
         {
             bool isWeekendTr = nowTr.DayOfWeek == DayOfWeek.Saturday || nowTr.DayOfWeek == DayOfWeek.Sunday;
-            // BIST kabaca 09:00 - 18:15 arası açıktır.
             if (isWeekendTr || nowTr.Hour < 9 || nowTr.Hour > 18)
             {
-                validUntilUtc = nowUtc.AddDays(1); // Borsa kapalı, uyarıyı engelle
+                validUntilUtc = nowUtc.AddDays(1);
             }
             else
             {
-                validUntilUtc = nowUtc.AddMinutes(25); // 15 dk çekim aralığı + 10 dk tolerans
+                validUntilUtc = nowUtc.AddMinutes(25);
             }
         }
 
         return new LatestPriceResponse(
             ProductCode: symbolCode,
-            Name: symbolCode, // Frontend'de AssetCatalog ile Türkçeleştirilecek
+            Name: GetPrettyName(symbolCode), // [KRİTİK]: Artık "THYAO.IS" yerine "Thyao" dönüyor.
             Type: finalType,
             Bid: bidPrice,
             Ask: askPrice,
