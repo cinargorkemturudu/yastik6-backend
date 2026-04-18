@@ -7,27 +7,26 @@ public static class HaremDataMapper
 {
     private static readonly CultureInfo TrCulture = new("tr-TR");
 
-    // [KRİTİK DEĞİŞİKLİK]: İşletim sistemi (Linux vs Windows) kaynaklı UpperCase (Büyük harf) sorunlarını 
-    // sıfıra indirmek için "TargetCode" alanını elle belirledik. Şansa yer yok!
+    
     private static readonly Dictionary<string, (string Type, string TargetCode)> AllowedAssets = new()
     {
         { "GRAM ALTIN", ("METAL", "GRAM_ALTIN") },
         { "Has Altın", ("METAL", "HAS_ALTIN") },
-        { "GÜMÜŞ TL", ("METAL", "GÜMÜŞ_TL") },
-        { "22 AYAR", ("METAL", "22_AYAR") },
-        { "14 AYAR", ("METAL", "14_AYAR") },
-        { "YENİ ÇEYREK", ("METAL", "YENİ_ÇEYREK") },
-        { "ESKİ ÇEYREK", ("METAL", "ESKİ_ÇEYREK") },
-        { "YENİ YARIM", ("METAL", "YENİ_YARIM") },
-        { "ESKİ YARIM", ("METAL", "ESKİ_YARIM") },
-        { "YENİ TAM", ("METAL", "YENİ_TAM") },
-        { "ESKİ TAM", ("METAL", "ESKİ_TAM") },
-        { "YENİ ATA", ("METAL", "YENİ_ATA") },
-        { "ESKİ ATA", ("METAL", "ESKİ_ATA") },
-        { "YENİ GREMSE", ("METAL", "YENİ_GREMSE") },
-        { "ESKİ GREMSE", ("METAL", "ESKİ_GREMSE") },
+        { "GÜMÜŞ TL", ("METAL", "GUMUS_TL") },     
+        { "22 AYAR", ("METAL", "AYAR_22") },       
+        { "14 AYAR", ("METAL", "AYAR_14") },      
+        { "YENİ ÇEYREK", ("METAL", "YENI_CEYREK") }, 
+        { "ESKİ ÇEYREK", ("METAL", "ESKI_CEYREK") }, 
+        { "YENİ YARIM", ("METAL", "YENI_YARIM") },   
+        { "ESKİ YARIM", ("METAL", "ESKI_YARIM") },  
+        { "YENİ TAM", ("METAL", "YENI_TAM") },     
+        { "ESKİ TAM", ("METAL", "ESKI_TAM") },      
+        { "YENİ ATA", ("METAL", "YENI_ATA") },       
+        { "ESKİ ATA", ("METAL", "ESKI_ATA") },       
+        { "YENİ GREMSE", ("METAL", "YENI_GREMSE") }, 
+        { "ESKİ GREMSE", ("METAL", "ESKI_GREMSE") }, 
         { "ONS", ("INDICATOR", "ONS") },
-        { "GÜMÜŞ ONS", ("INDICATOR", "GÜMÜŞ_ONS") }
+        { "GÜMÜŞ ONS", ("INDICATOR", "GUMUS_ONS") }  
     };
 
     public static LatestPriceResponse? MapToResponse(HaremClient.HaremItemRaw item)
