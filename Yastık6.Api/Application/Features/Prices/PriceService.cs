@@ -9,6 +9,7 @@ public sealed class PriceService : IPriceService
     private readonly IPriceHistoryRepository _repository; 
     private readonly ISystemClock _clock;
     private readonly IMemoryCache _cache;
+    private static readonly SemaphoreSlim _cacheLock = new SemaphoreSlim(1, 1);
 
     public PriceService(
         IPriceHistoryRepository repository, 
@@ -25,28 +26,46 @@ public sealed class PriceService : IPriceService
         PriceHistoryRange range,
         CancellationToken ct = default)
     {
-        // 1. Her ürün ve zaman aralığı için benzersiz bir RAM anahtarı (Örn: HistoryChart_BTC-USD_Month)
+        // 1. RAM'deki vitrin anahtarı
         var cacheKey = $"HistoryChart_{productCode}_{range}";
 
-        // 2. Veritabanını koruyan Zırh (GetOrCreateAsync)
-        var points = await _cache.GetOrCreateAsync(cacheKey, async entry =>
-        {
-            // Zaman aralığına göre (Day, Month, Year) ne kadar süre RAM'de tutulacağını dinamik hesapla
-            entry.AbsoluteExpirationRelativeToNow = GetCacheDuration(range);
+        if (!_cache.TryGetValue(cacheKey, out IReadOnlyList<PricePointDto>? points))        {
+            // 3. Vitrin boşsa kapıda sıraya gir (Asenkron Kilit)
+            await _cacheLock.WaitAsync(ct);
+            try
+            {
+                // 4. Kilidi alınca tekrar bak (Biz beklerken başkası doldurmuş olabilir)
+                if (!_cache.TryGetValue(cacheKey, out points))
+                {
+                    // 5. Hala boşsa DB'ye in (Sadece 1 şanslı thread buraya girebilir)
+                    var since = CalculateSinceDate(range);
+                    var bucketSize = GetBucketResolution(range);
+                
+                    points = await _repository.GetBucketedHistoryAsync(productCode, since, bucketSize, ct);
 
-            var since = CalculateSinceDate(range);
-            var bucketSize = GetBucketResolution(range);
+                    // 6. Gelen datayı dinamik süreyle vitrine koy
+                    var cacheOptions = new MemoryCacheEntryOptions
+                    {
+                        AbsoluteExpirationRelativeToNow = GetCacheDuration(range)
+                    };
+                    _cache.Set(cacheKey, points, cacheOptions);
+                }
+            }
+            finally
+            {
+                // 7. Ne olursa olsun kilidi aç ki sistem tıkanmasın
+                _cacheLock.Release();
+            }
+        }
 
-            // Veritabanına sadece önbellek boşsa veya süresi dolmuşsa gidilir
-            return await _repository.GetBucketedHistoryAsync(productCode, since, bucketSize, ct);
-        });
-
+        // 8. İster 1 milisaniyede Cache'den, ister 2 saniyede DB'den gelmiş olsun; sonucu dön
         return new PriceHistoryResponse(
             ProductCode: productCode,
             Range: range,
             Points: points ?? new List<PricePointDto>()
         );
     }
+
 
     private TimeSpan GetCacheDuration(PriceHistoryRange range)
     {
