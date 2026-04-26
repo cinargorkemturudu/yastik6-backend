@@ -102,10 +102,22 @@ public static class YahooFinanceMapper
                 validUntilUtc = nowUtc.AddMinutes(25);
             }
         }
+        string realName = GetPrettyName(symbolCode); // Varsayılan olarak eski "Thyao" mantığını al
+        
+        // Eğer Yahoo bize gerçek ve uzun şirket adını (LongName) verdiyse, onu ezerek kullan
+        if (security.Fields.ContainsKey("LongName") && security.Fields["LongName"] != null)
+        {
+            realName = security.Fields["LongName"].ToString();
+        }
+        // Uzun adı yoksa ama kısa şirket adı (ShortName) varsa onu kullan
+        else if (security.Fields.ContainsKey("ShortName") && security.Fields["ShortName"] != null)
+        {
+            realName = security.Fields["ShortName"].ToString();
+        }
 
         return new LatestPriceResponse(
             ProductCode: symbolCode,
-            Name: GetPrettyName(symbolCode), // [KRİTİK]: Artık "THYAO.IS" yerine "Thyao" dönüyor.
+            Name: realName, // [DEĞİŞTİ]: Artık "Thyao" değil, "Türk Hava Yollari A.O." dönüyor.
             Type: finalType,
             Bid: bidPrice,
             Ask: askPrice,
