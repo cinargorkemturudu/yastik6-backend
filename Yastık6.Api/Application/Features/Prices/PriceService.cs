@@ -26,24 +26,25 @@ public sealed class PriceService : IPriceService
         PriceHistoryRange range,
         CancellationToken ct = default)
     {
-        // 1. RAM'deki vitrin anahtarı
         var cacheKey = $"HistoryChart_{productCode}_{range}";
 
-        if (!_cache.TryGetValue(cacheKey, out IReadOnlyList<PricePointDto>? points))        {
-            // 3. Vitrin boşsa kapıda sıraya gir (Asenkron Kilit)
+        if (!_cache.TryGetValue(cacheKey, out IReadOnlyList<PricePointDto>? points))
+        {
             await _cacheLock.WaitAsync(ct);
             try
             {
-                // 4. Kilidi alınca tekrar bak (Biz beklerken başkası doldurmuş olabilir)
                 if (!_cache.TryGetValue(cacheKey, out points))
                 {
-                    // 5. Hala boşsa DB'ye in (Sadece 1 şanslı thread buraya girebilir)
                     var since = CalculateSinceDate(range);
                     var bucketSize = GetBucketResolution(range);
+                    var now = _clock.UtcNow;
                 
-                    points = await _repository.GetBucketedHistoryAsync(productCode, since, bucketSize, ct);
+                    // 1. Veritabanından mevcut (seyrek/sparse) veriyi çek
+                    var rawPoints = await _repository.GetBucketedHistoryAsync(productCode, since, bucketSize, ct);
 
-                    // 6. Gelen datayı dinamik süreyle vitrine koy
+                    // 2. LOCF (Fill-Forward) algoritmasını uygulayarak boşlukları doldur
+                    points = ApplyFillForward(rawPoints, since, now, bucketSize);
+
                     var cacheOptions = new MemoryCacheEntryOptions
                     {
                         AbsoluteExpirationRelativeToNow = GetCacheDuration(range)
@@ -53,12 +54,10 @@ public sealed class PriceService : IPriceService
             }
             finally
             {
-                // 7. Ne olursa olsun kilidi aç ki sistem tıkanmasın
                 _cacheLock.Release();
             }
         }
 
-        // 8. İster 1 milisaniyede Cache'den, ister 2 saniyede DB'den gelmiş olsun; sonucu dön
         return new PriceHistoryResponse(
             ProductCode: productCode,
             Range: range,
@@ -66,21 +65,57 @@ public sealed class PriceService : IPriceService
         );
     }
 
+    // --- YENİ EKLENEN LOCF (FILL-FORWARD) ALGORİTMASI ---
+    private IReadOnlyList<PricePointDto> ApplyFillForward(
+        IReadOnlyList<PricePointDto> rawPoints, 
+        DateTimeOffset since, 
+        DateTimeOffset until, 
+        TimeSpan bucketSize)
+    {
+        // Eğer veritabanında hiç veri yoksa yapacak bir şey yok
+        if (rawPoints == null || rawPoints.Count == 0)
+            return new List<PricePointDto>();
+
+        var densePoints = new List<PricePointDto>();
+        
+        // Veritabanındaki ilk veri 'since'den sonraysa oradan başla, aksi halde 'since'den başla
+        var currentBucket = rawPoints[0].TimestampUtc > since ? rawPoints[0].TimestampUtc : since;
+        var lastKnownPrice = rawPoints[0].Price;
+        
+        int i = 0;
+        
+        // İstenen bitiş zamanına (Şu an) kadar kovaları adım adım doldur
+        while (currentBucket <= until)
+        {
+            // O anki zaman dilimine (bucket) kadar olan gerçek verileri tara 
+            // ve en güncel fiyatı 'lastKnownPrice' olarak akılda tut.
+            while (i < rawPoints.Count && rawPoints[i].TimestampUtc <= currentBucket)
+            {
+                lastKnownPrice = rawPoints[i].Price;
+                i++;
+            }
+            
+            // O anki zaman dilimi için (gerçek veri olmasa bile) bir nokta ekle
+            densePoints.Add(new PricePointDto(currentBucket, lastKnownPrice));
+            
+            // Bir sonraki kovaya (bucket) geç
+            currentBucket = currentBucket.Add(bucketSize);
+        }
+
+        return densePoints;
+    }
 
     private TimeSpan GetCacheDuration(PriceHistoryRange range)
     {
-        // Dinamik Önbellek Stratejisi: 
-        // Veri ne kadar geniş bir zamanı kapsıyorsa (Year/FiveYears), uç noktadaki günlük değişimler 
-        // grafiğin genel şeklini o kadar az etkiler. Bu yüzden geniş aralıklar RAM'de daha uzun tutulur.
         return range switch
         {
-            PriceHistoryRange.Day => TimeSpan.FromMinutes(5),          // Anlık hareketler önemli
-            PriceHistoryRange.Week => TimeSpan.FromMinutes(30),        // Nispeten taze kalmalı
-            PriceHistoryRange.Month => TimeSpan.FromHours(2),          // Bugünün mumu çok bayatlamasın
+            PriceHistoryRange.Day => TimeSpan.FromMinutes(5),
+            PriceHistoryRange.Week => TimeSpan.FromMinutes(30),
+            PriceHistoryRange.Month => TimeSpan.FromHours(2),
             PriceHistoryRange.ThreeMonths => TimeSpan.FromHours(6),
             PriceHistoryRange.SixMonths => TimeSpan.FromHours(12),
-            PriceHistoryRange.Year => TimeSpan.FromHours(24),          // Makro trend, günde 1 kez yenilense yeter
-            PriceHistoryRange.FiveYears => TimeSpan.FromHours(24),     // Tamamen statik tarihsel veri
+            PriceHistoryRange.Year => TimeSpan.FromHours(24),
+            PriceHistoryRange.FiveYears => TimeSpan.FromHours(24),
             PriceHistoryRange.All => TimeSpan.FromHours(24),
             _ => TimeSpan.FromMinutes(5)
         };
