@@ -114,4 +114,20 @@ public sealed class PriceHistoryRepository : IPriceHistoryRepository
 
         return previousCloses;
     }
+    
+    public async Task<PricePointDto?> GetLastPriceBeforeAsync(string productCode, DateTimeOffset targetDate, CancellationToken ct = default)
+    {
+        // Fetches the single most recent record for the specific asset before the target date
+        var record = await _context.Prices
+            .AsNoTracking()
+            .Where(p => p.ProductCode == productCode && p.TimestampUtc < targetDate)
+            .OrderByDescending(p => p.TimestampUtc)
+            .FirstOrDefaultAsync(ct);
+
+        if (record == null)
+            return null;
+
+        // Map the database entity to the DTO expected by the service
+        return new PricePointDto(record.TimestampUtc, record.AskPrice);
+    }
 }

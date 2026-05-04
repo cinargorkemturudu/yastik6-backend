@@ -14,5 +14,7 @@ public interface IPriceHistoryRepository
     Task DeletePriceRecordsAsync(IEnumerable<PriceRecord> records, CancellationToken ct = default);
     
     Task<Dictionary<string, decimal>> GetPreviousClosePricesAsync(string source, DateTimeOffset cutoff, CancellationToken ct = default);
+    
+    Task<PricePointDto?> GetLastPriceBeforeAsync(string productCode, DateTimeOffset targetDate, CancellationToken ct = default);
 }
 

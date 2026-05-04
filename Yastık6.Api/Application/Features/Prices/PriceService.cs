@@ -38,12 +38,15 @@ public sealed class PriceService : IPriceService
                     var since = CalculateSinceDate(range);
                     var bucketSize = GetBucketResolution(range);
                     var now = _clock.UtcNow;
-                
+            
                     // 1. Veritabanından mevcut (seyrek/sparse) veriyi çek
                     var rawPoints = await _repository.GetBucketedHistoryAsync(productCode, since, bucketSize, ct);
+                
+                    // 2. LOCF algoritmasının referans alacağı 'Çapa' noktasını geçmişten çek
+                    var anchorPoint = await _repository.GetLastPriceBeforeAsync(productCode, since, ct);
 
-                    // 2. LOCF (Fill-Forward) algoritmasını uygulayarak boşlukları doldur
-                    points = ApplyFillForward(rawPoints, since, now, bucketSize);
+                    // 3. LOCF (Fill-Forward) algoritmasını uygulayarak boşlukları doldur
+                    points = ApplyFillForward(rawPoints, anchorPoint, since, now, bucketSize);
 
                     var cacheOptions = new MemoryCacheEntryOptions
                     {
@@ -66,10 +69,10 @@ public sealed class PriceService : IPriceService
     }
 
     // --- YENİ EKLENEN LOCF (FILL-FORWARD) ALGORİTMASI ---
-    private IReadOnlyList<PricePointDto> ApplyFillForward(
-        IReadOnlyList<PricePointDto> rawPoints, 
-        DateTimeOffset since, 
-        DateTimeOffset until, 
+    private IReadOnlyList<PricePointDto> ApplyFillForward(IReadOnlyList<PricePointDto> rawPoints,
+        PricePointDto? anchorPoint,
+        DateTimeOffset since,
+        DateTimeOffset until,
         TimeSpan bucketSize)
     {
         // Eğer veritabanında hiç veri yoksa yapacak bir şey yok
