@@ -51,6 +51,11 @@ public static class YahooFinanceMapper
 
     public static LatestPriceResponse? MapToResponse(string symbolCode, Security security, string symbolType, string providerName)
     {
+        if (!security.Fields.ContainsKey("RegularMarketPrice")) 
+        {
+            return null; // Eğer fiyat verisi hiç yoksa, sistemi patlatmadan nazikçe atla
+        }
+        
         decimal marketPrice = (decimal)security.RegularMarketPrice;
         if (marketPrice == 0) return null;
 
