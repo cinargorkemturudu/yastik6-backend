@@ -1,6 +1,5 @@
 using Microsoft.Extensions.Caching.Memory;
 using Yastık6.Api.Application.Common.Interfaces;
-using Yastık6.Api.Infrastructure.Caching;
 
 namespace Yastık6.Api.Application.Features.Prices;
 
@@ -69,22 +68,32 @@ public sealed class PriceService : IPriceService
     }
 
     // --- YENİ EKLENEN LOCF (FILL-FORWARD) ALGORİTMASI ---
-    private IReadOnlyList<PricePointDto> ApplyFillForward(IReadOnlyList<PricePointDto> rawPoints,
+    // --- YENİ EKLENEN LOCF (FILL-FORWARD) ALGORİTMASI ---
+    private IReadOnlyList<PricePointDto> ApplyFillForward(
+        IReadOnlyList<PricePointDto> rawPoints,
         PricePointDto? anchorPoint,
         DateTimeOffset since,
         DateTimeOffset until,
         TimeSpan bucketSize)
     {
-        // Eğer veritabanında hiç veri yoksa yapacak bir şey yok
-        if (rawPoints == null || rawPoints.Count == 0)
-            return new List<PricePointDto>();
-
         var densePoints = new List<PricePointDto>();
         
-        // Veritabanındaki ilk veri 'since'den sonraysa oradan başla, aksi halde 'since'den başla
-        var currentBucket = rawPoints[0].TimestampUtc > since ? rawPoints[0].TimestampUtc : since;
-        var lastKnownPrice = rawPoints[0].Price;
+        // 1. DÜZELTME: Zamanı kesinlikle zilin çaldığı andan (since) başlatıyoruz. 
+        // Rakibin ilk yumruğunu (rawPoints[0]) beklemiyoruz veya ekseni kaydırmıyoruz.
+        var currentBucket = since;
         
+        // 2. DÜZELTME: Başlangıç fiyatımız dünkü kasa (anchorPoint). 
+        // Eğer o da yoksa 0 (veya raw'dan gelen ilk değer). Boşa gitmesini engelledik.
+        decimal lastKnownPrice = 0m;
+        if (anchorPoint != null)
+        {
+            lastKnownPrice = anchorPoint.Price;
+        }
+        else if (rawPoints.Count > 0)
+        {
+            lastKnownPrice = rawPoints[0].Price;
+        }
+
         int i = 0;
         
         // İstenen bitiş zamanına (Şu an) kadar kovaları adım adım doldur
@@ -92,14 +101,18 @@ public sealed class PriceService : IPriceService
         {
             // O anki zaman dilimine (bucket) kadar olan gerçek verileri tara 
             // ve en güncel fiyatı 'lastKnownPrice' olarak akılda tut.
-            while (i < rawPoints.Count && rawPoints[i].TimestampUtc <= currentBucket)
+            while (rawPoints != null && i < rawPoints.Count && rawPoints[i].TimestampUtc <= currentBucket)
             {
                 lastKnownPrice = rawPoints[i].Price;
                 i++;
             }
             
-            // O anki zaman dilimi için (gerçek veri olmasa bile) bir nokta ekle
-            densePoints.Add(new PricePointDto(currentBucket, lastKnownPrice));
+            // O anki zaman dilimi için (fiyat 0 değilse) bir nokta ekle.
+            // Bu sayede liste tamamen boş gelse bile, Anchor'dan aldığı güçle grafiği dümdüz çizer.
+            if (lastKnownPrice > 0)
+            {
+                densePoints.Add(new PricePointDto(currentBucket, lastKnownPrice));
+            }
             
             // Bir sonraki kovaya (bucket) geç
             currentBucket = currentBucket.Add(bucketSize);

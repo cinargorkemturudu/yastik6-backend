@@ -59,7 +59,7 @@ public abstract class YahooFinanceBase : IPriceProvider
             .WaitAndRetryAsync(
                 retryCount: 2, 
                 sleepDurationProvider: attempt => TimeSpan.FromSeconds(2 * attempt),
-                onRetry: (exception, timeSpan, retryCount, context) => 
+                onRetry: (exception, timeSpan, retryCount) => 
                 {
                     _logger.LogWarning("Yahoo API geçici hata verdi ({Message}). {Delay} saniye sonra tekrar deneniyor (Deneme: {RetryCount}).", exception.Message, timeSpan.TotalSeconds, retryCount);
                 });
@@ -77,7 +77,14 @@ public abstract class YahooFinanceBase : IPriceProvider
                         var symbolCode = kvp.Key;
                         var security = kvp.Value;
                         
-                        var dbSymbol = activeSymbols.First(s => s.Code == symbolCode);
+                        // 1. DÜZELTME: First yerine FirstOrDefault kullanıyoruz ve büyük/küçük harf farkını (case-insensitivity) eziyoruz.
+                        var dbSymbol = activeSymbols.FirstOrDefault(s => string.Equals(s.Code, symbolCode, StringComparison.OrdinalIgnoreCase));
+                        
+                        // 2. DÜZELTME: Eğer Yahoo bize listemizde olmayan garip bir sembol döndüyse, sistemi patlatmadan döngüde sıradaki sembole geç.
+                        if (dbSymbol == null) 
+                        {
+                            continue;
+                        }
                         
                         var mappedItem = YahooFinanceMapper.MapToResponse(
                             symbolCode, 
