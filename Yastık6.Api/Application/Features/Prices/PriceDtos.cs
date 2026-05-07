@@ -23,6 +23,7 @@ public sealed record LatestPriceResponse(
     string Type, 
     decimal Bid,
     decimal Ask,
+    decimal? LastPrice,
     decimal ChangeRate,
     string FormattedBid, 
     string FormattedAsk, 

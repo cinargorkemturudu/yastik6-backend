@@ -1,9 +1,11 @@
 using Microsoft.EntityFrameworkCore;
-using Polly; // [EKLENDİ]: Polly kütüphanesi
+using Polly; 
 using YahooFinanceApi;
 using Yastık6.Api.Application.Common.Interfaces;
 using Yastık6.Api.Application.Features.Prices;
+using Yastık6.Api.Infrastructure.Caching;
 using Yastık6.Api.Infrastructure.Persistence;
+using Yastık6.Api.Infrastructure.Alerts; // [YENİ] Watchdog
 
 namespace Yastık6.Api.Infrastructure.Providers.YahooFinance;
 
@@ -18,18 +20,13 @@ public abstract class YahooFinanceBase : IPriceProvider
         _logger = logger;
     }
 
-    // Properties to be implemented by derived classes
     public abstract string ProviderName { get; }
     public abstract TimeSpan RefreshInterval { get; }
-    
-    // Defines which symbol types this client is responsible for (e.g., "BIST", "FOREX")
     protected abstract string[] TargetSymbolTypes { get; }
-
     public virtual TimeSpan MarketCloseTime => TimeSpan.FromHours(23.99);
 
     public virtual bool IsMarketOpen()
     {
-        // Default market open logic: Closed on weekends
         var today = DateTime.UtcNow.DayOfWeek;
         return today != DayOfWeek.Saturday && today != DayOfWeek.Sunday;
     }
@@ -38,20 +35,41 @@ public abstract class YahooFinanceBase : IPriceProvider
     {
         using var scope = _scopeFactory.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        
+        var snapshotStore = scope.ServiceProvider.GetRequiredService<IPriceSnapshotStore>();
 
-        // Fetch only the symbols that match the target types of the derived class
         var activeSymbols = await dbContext.TrackedSymbols
             .Where(s => s.IsActive && TargetSymbolTypes.Contains(s.SymbolType))
             .ToListAsync(ct);
 
         if (!activeSymbols.Any()) return new List<LatestPriceResponse>();
 
+        var cachedPrices = snapshotStore.Current?.Items.ToDictionary(i => i.ProductCode) 
+            ?? new Dictionary<string, LatestPriceResponse>();
+
+        var symbolsToFetch = new List<string>();
+        
+        var stalenessThreshold = DateTimeOffset.UtcNow.AddMinutes(-15); 
+
+        foreach (var dbSymbol in activeSymbols)
+        {
+            if (cachedPrices.TryGetValue(dbSymbol.Code, out var cacheItem))
+            {
+                if (cacheItem.Source != ProviderName && cacheItem.AsOfUtc > stalenessThreshold)
+                {
+                    continue; 
+                }
+            }
+            symbolsToFetch.Add(dbSymbol.Code);
+        }
+
+        if (!symbolsToFetch.Any()) 
+        {
+            return new List<LatestPriceResponse>();
+        }
+
         var results = new List<LatestPriceResponse>();
-        var symbolCodes = activeSymbols.Select(s => s.Code).ToList();
-        
-        // Process symbols in chunks of 50 to comply with Yahoo Finance API rate limits
-        var chunks = symbolCodes.Chunk(50);
-        
+        var chunks = symbolsToFetch.Chunk(50); 
         var random = new Random(); 
 
         var retryPolicy = Policy
@@ -71,20 +89,14 @@ public abstract class YahooFinanceBase : IPriceProvider
                 await retryPolicy.ExecuteAsync(async () => 
                 {
                     var securities = await Yahoo.Symbols(chunk).QueryAsync(ct);
-
                     foreach (var kvp in securities)
                     {
                         var symbolCode = kvp.Key;
                         var security = kvp.Value;
                         
-                        // 1. DÜZELTME: First yerine FirstOrDefault kullanıyoruz ve büyük/küçük harf farkını (case-insensitivity) eziyoruz.
                         var dbSymbol = activeSymbols.FirstOrDefault(s => string.Equals(s.Code, symbolCode, StringComparison.OrdinalIgnoreCase));
                         
-                        // 2. DÜZELTME: Eğer Yahoo bize listemizde olmayan garip bir sembol döndüyse, sistemi patlatmadan döngüde sıradaki sembole geç.
-                        if (dbSymbol == null) 
-                        {
-                            continue;
-                        }
+                        if (dbSymbol == null) continue;
                         
                         var mappedItem = YahooFinanceMapper.MapToResponse(
                             symbolCode, 
@@ -101,7 +113,19 @@ public abstract class YahooFinanceBase : IPriceProvider
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error occurred while fetching {ChunkSize} symbols from Yahoo Finance for provider {ProviderName} after all retries.", chunk.Length, ProviderName);
+                _logger.LogError(ex, "Yahoo Finance üzerinden {ProviderName} için veri çekilirken hata oluştu.", ProviderName);
+
+                // [WATCHDOG] Shadow Ban veya Limit Aşımı kontrolü
+                if (ex.Message.Contains("429") || ex.Message.Contains("Too Many Requests") || ex.Message.Contains("Forbidden"))
+                {
+                    var alertService = scope.ServiceProvider.GetService<IAlertService>();
+                    if (alertService != null)
+                    {
+                        _ = alertService.SendAlertAsync(
+                            $"🚫 *YAHOO SHADOW BAN*\nModül: `{ProviderName}`\nÇok fazla istek atıldı, IP adresi geçici kısıtlandı!", 
+                            ct);
+                    }
+                }
             }
 
             var jitterMs = random.Next(0, 300);

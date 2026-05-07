@@ -12,7 +12,7 @@ public sealed class YahooForexClient : YahooFinanceBase
     public override string ProviderName => "YahooForex";
     
     // Forex markets are updated frequently during active trading sessions.
-    public override TimeSpan RefreshInterval => TimeSpan.FromMinutes(1);
+    public override TimeSpan RefreshInterval => TimeSpan.FromMinutes(5);
     
     protected override string[] TargetSymbolTypes => new[] { "FOREX" };
 

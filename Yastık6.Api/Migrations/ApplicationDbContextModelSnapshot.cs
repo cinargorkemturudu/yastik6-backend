@@ -29,6 +29,9 @@ namespace Yastık6.Api.Migrations
                     b.Property<decimal>("BidPrice")
                         .HasColumnType("TEXT");
 
+                    b.Property<decimal?>("LastPrice")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("ProductCode")
                         .IsRequired()
                         .HasColumnType("TEXT");
