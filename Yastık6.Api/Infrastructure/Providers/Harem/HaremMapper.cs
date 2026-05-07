@@ -68,6 +68,7 @@ public static class HaremDataMapper
             Type: assetType,
             Bid: bid,
             Ask: ask,
+            LastPrice: null,
             ChangeRate: 0m, 
             FormattedBid: formattedBid,
             FormattedAsk: formattedAsk,

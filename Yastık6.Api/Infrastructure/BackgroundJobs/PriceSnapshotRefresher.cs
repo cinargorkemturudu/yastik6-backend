@@ -2,6 +2,7 @@ using Yastık6.Api.Application.Common.Interfaces;
 using Yastık6.Api.Application.Features.Prices;
 using Yastık6.Api.Domain.Entities;
 using Yastık6.Api.Infrastructure.Caching;
+using Yastık6.Api.Infrastructure.Alerts; // [YENİ] Watchdog için eklendi
 
 namespace Yastık6.Api.Infrastructure.BackgroundJobs;
 
@@ -11,18 +12,21 @@ public sealed class PriceSnapshotRefresher : BackgroundService
     private readonly IPreviousCloseStore _previousCloseStore;
     private readonly ILogger<PriceSnapshotRefresher> _logger;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IAlertService _alertService; // [YENİ] Bekçi Köpeği
     private static readonly object CacheLock = new object();
 
     public PriceSnapshotRefresher(
         IPriceSnapshotStore ss,
         IPreviousCloseStore previousCloseStore,
         ILogger<PriceSnapshotRefresher> logger,
-        IServiceScopeFactory scopeFactory)
+        IServiceScopeFactory scopeFactory,
+        IAlertService alertService) // [YENİ] Bağımlılık eklendi
     {
         _ss = ss;
         _previousCloseStore = previousCloseStore;
         _logger = logger;
         _scopeFactory = scopeFactory;
+        _alertService = alertService;
     }
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
@@ -52,7 +56,6 @@ public sealed class PriceSnapshotRefresher : BackgroundService
             {
                 using var scope = _scopeFactory.CreateScope();
                 
-                // [DÜZELTİLDİ]: "(IPriceProvider?)" cast'i kaldırıldı. (Type cast is redundant)
                 var provider = scope.ServiceProvider.GetServices<IPriceProvider>()
                                     .FirstOrDefault(p => p.GetType() == providerType);
 
@@ -74,11 +77,9 @@ public sealed class PriceSnapshotRefresher : BackgroundService
 
                 var prices = await provider.GetMarketOverviewAsync(stoppingToken);
                 
-                // [DÜZELTİLDİ]: "prices?.Count ?? 0" yerine direkt "prices.Count" kullanıldı. (Expression is never null)
                 _logger.LogDebug("[{Provider}] fetched and updated {Count} records.",
                     provider.ProviderName, prices.Count);
 
-                // [DÜZELTİLDİ]: prices null olamayacağı için direkt Count > 0 kontrolü yapıldı
                 if (prices.Count > 0)
                 {
                     var calculatedPrices = new List<LatestPriceResponse>();
@@ -101,14 +102,43 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                     lock (CacheLock)
                     {
                         var currentSnapshot = _ss.Current;
-                        var currentDict = currentSnapshot?.Items.ToDictionary(p => p.ProductCode) 
-                                          ?? new Dictionary<string, LatestPriceResponse>();
+                        var currentDict = currentSnapshot?.Items.ToDictionary(p => p.ProductCode)
+                                           ?? new Dictionary<string, LatestPriceResponse>();
 
                         foreach (var newPrice in calculatedPrices)
                         {
+                            // --- 1. SIFIR FİYAT KALKANI (ZERO-PRICE SHIELD) ---
+                            if (newPrice.Ask <= 0 || newPrice.Bid <= 0)
+                            {
+                                _logger.LogWarning("[SHIELD] {Code} fiyatı 0 veya negatif geldi. Veri reddedildi! Kaynak: {Source}", newPrice.ProductCode, newPrice.Source);
+                                
+                                // [WATCHDOG] Arka planda ateşle ve unut (Fire and forget)
+                                _ = _alertService.SendAlertAsync($"⚠️ *SIFIR FİYAT REDDEDİLDİ*\nSembol: `{newPrice.ProductCode}`\nKaynak: `{newPrice.Source}`\nFiyat: `{newPrice.Ask}`\n_Sistem eski fiyatı korumaya devam ediyor._", stoppingToken);
+                                
+                                continue;
+                            }
+
                             bool hasPriceChanged = true;
+
                             if (currentDict.TryGetValue(newPrice.ProductCode, out var existingPrice))
                             {
+                                // --- 2. ANİ SAPMA KALKANI (FLASH CRASH SHIELD) ---
+                                if (existingPrice.Ask > 0)
+                                {
+                                    var instantChange = Math.Abs((newPrice.Ask - existingPrice.Ask) / existingPrice.Ask * 100m);
+                                    
+                                    if (instantChange > 40m) 
+                                    {
+                                        _logger.LogWarning("[SHIELD] {Code} için mantıksız fiyat sapması (%{Rate:N2}). Veri reddedildi! Eski: {Old}, Yeni: {New}, Kaynak: {Source}", 
+                                            newPrice.ProductCode, instantChange, existingPrice.Ask, newPrice.Ask, newPrice.Source);
+                                            
+                                        // [WATCHDOG] Arka planda ateşle ve unut (Fire and forget)
+                                        _ = _alertService.SendAlertAsync($"🚨 *ANI SAPMA (FLASH CRASH) TESPİT EDİLDİ*\nSembol: `{newPrice.ProductCode}`\nEski: `{existingPrice.Ask}`\nYeni: `{newPrice.Ask}`\nDeğişim: `%{instantChange:N2}`\nKaynak: `{newPrice.Source}`\n\n*Müdahale gerekebilir!*", stoppingToken);
+                                        
+                                        continue;
+                                    }
+                                }
+
                                 if (existingPrice.Ask == newPrice.Ask && existingPrice.Bid == newPrice.Bid)
                                 {
                                     hasPriceChanged = false; 
@@ -124,6 +154,7 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                                     Source = newPrice.Source,
                                     AskPrice = newPrice.Ask,
                                     BidPrice = newPrice.Bid,
+                                    LastPrice = newPrice.LastPrice,
                                     TimestampUtc = clock.UtcNow
                                 });
                             }
@@ -151,6 +182,14 @@ public sealed class PriceSnapshotRefresher : BackgroundService
             catch (Exception ex)
             {
                 _logger.LogError(ex, "An error occurred while fetching prices for provider type {ProviderType}!", providerType.Name);
+                
+                // [WATCHDOG] Tedarikçi tamamen patladığında ana akışı durdurup sana haber verir.
+                await _alertService.SendAlertAsync(
+                    $"⚠️ *Tedarikçi Çöktü: {providerType.Name}*\n" +
+                    $"Zaman: `{DateTime.UtcNow:HH:mm:ss} UTC`\n" +
+                    $"Hata: `{ex.Message}`", 
+                    stoppingToken);
+
                 await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
             }
         }

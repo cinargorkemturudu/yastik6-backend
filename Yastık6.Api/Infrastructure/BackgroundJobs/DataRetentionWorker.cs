@@ -1,13 +1,14 @@
 using Yastık6.Api.Application.Common.Interfaces;
 using Yastık6.Api.Domain.Entities;
+using Yastık6.Api.Infrastructure.Alerts; // [YENİ] Watchdog
 
 namespace Yastık6.Api.Infrastructure.BackgroundJobs;
 
 public sealed class DataRetentionWorker(
     IServiceScopeFactory scopeFactory, 
-    ILogger<DataRetentionWorker> logger) : BackgroundService
+    ILogger<DataRetentionWorker> logger,
+    IAlertService alertService) : BackgroundService // [YENİ EKLENDİ]
 {
-    // The worker wakes up once a day to perform database cleanup
     private readonly TimeSpan _runInterval = TimeSpan.FromDays(1);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -23,6 +24,11 @@ public sealed class DataRetentionWorker(
             catch (Exception ex)
             {
                 logger.LogError(ex, "An error occurred during the data compression cycle!");
+                
+                // [WATCHDOG] Veritabanı şişme tehlikesi!
+                await alertService.SendAlertAsync(
+                    $"🗑️ *VERİTABANI BAKIM HATASI*\nGeçmiş veriler temizlenemedi/sıkıştırılamadı. DB boyutu kontrolsüz büyüyebilir!\nHata: `{ex.Message}`", 
+                    stoppingToken);
             }
 
             await Task.Delay(_runInterval, stoppingToken);
@@ -37,11 +43,9 @@ public sealed class DataRetentionWorker(
 
         var now = clock.UtcNow;
 
-        // RULE 1: Data between 7 and 30 days old -> Compress into 2-HOUR buckets
         var weekAgo = now.AddDays(-7);
         var monthAgo = now.AddDays(-30);
         
-        // [CHUNKED] Process the 30-day window in 1-DAY chunks to prevent RAM spikes (OOM)
         var currentChunkStart = monthAgo;
         while (currentChunkStart < weekAgo)
         {
@@ -52,11 +56,9 @@ public sealed class DataRetentionWorker(
             currentChunkStart = currentChunkEnd;
         }
 
-        // RULE 2: Data older than 30 days (up to 5 years) -> Compress into DAILY buckets
         var fiveYearsAgo = now.AddYears(-5); 
         currentChunkStart = fiveYearsAgo;
         
-        // [CHUNKED] Process the 5-year window in 1-MONTH chunks to prevent RAM spikes (OOM)
         while (currentChunkStart < monthAgo)
         {
             var currentChunkEnd = currentChunkStart.AddMonths(1);
@@ -76,7 +78,6 @@ public sealed class DataRetentionWorker(
         TimeSpan bucketSize, 
         CancellationToken ct)
     {
-        // Because of the chunking loop above, this will only ever load a safe amount of records (e.g., 1 month max)
         var oldRecords = await repository.GetPricesBetweenAsync(start, end, ct);
 
         if (oldRecords.Count == 0) return;
@@ -98,10 +99,8 @@ public sealed class DataRetentionWorker(
             })
             .ToList();
 
-        // Safety check: Don't write anything if the compression didn't actually reduce the row count
         if (compressedRecords.Count >= oldRecords.Count) return;
 
-        // EF Core transactions ensure atomicity: It either deletes and inserts together, or fails safely
         await repository.AddPriceRecordsAsync(compressedRecords, ct);
         await repository.DeletePriceRecordsAsync(oldRecords, ct);
         

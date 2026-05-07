@@ -126,6 +126,7 @@ public static class YahooFinanceMapper
             Type: finalType,
             Bid: bidPrice,
             Ask: askPrice,
+            LastPrice: marketPrice,
             ChangeRate: 0m,
             FormattedBid: bidPrice.ToString(format, CultureInfo.InvariantCulture),
             FormattedAsk: askPrice.ToString(format, CultureInfo.InvariantCulture),

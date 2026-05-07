@@ -37,10 +37,11 @@ public sealed class PriceHistoryRepository : IPriceHistoryRepository
 
         // [FIXED] Used substr() to strip the timezone offset from the DateTimeOffset string. 
         // Without this, SQLite's strftime('%s') cannot parse the string and silently returns NULL.
+        // [GÜNCELLENDİ] Varsa LastPrice (Binance/BIST), yoksa Ask ve Bid ortalaması alınarak grafiğe basılır.
         var sql = @"
             SELECT 
                 (CAST(strftime('%s', substr(TimestampUtc, 1, 19)) AS INTEGER) / @bucket) * @bucket AS UnixSeconds,
-                AVG(AskPrice) AS Price
+                AVG(COALESCE(LastPrice, (AskPrice + BidPrice) / 2.0)) AS Price
             FROM Prices
             WHERE ProductCode = @code AND TimestampUtc >= @since
             GROUP BY UnixSeconds
@@ -110,7 +111,8 @@ public sealed class PriceHistoryRepository : IPriceHistoryRepository
             .Where(p => p.Source == source && p.TimestampUtc < cutoff)
             .GroupBy(p => p.ProductCode)
             .Select(g => g.OrderByDescending(p => p.TimestampUtc).First())
-            .ToDictionaryAsync(p => p.ProductCode, p => p.AskPrice, ct);
+            // [GÜNCELLENDİ] Varsa LastPrice, yoksa Ortalama
+            .ToDictionaryAsync(p => p.ProductCode, p => p.LastPrice ?? ((p.AskPrice + p.BidPrice) / 2m), ct);
 
         return previousCloses;
     }
@@ -127,7 +129,7 @@ public sealed class PriceHistoryRepository : IPriceHistoryRepository
         if (record == null)
             return null;
 
-        // Map the database entity to the DTO expected by the service
-        return new PricePointDto(record.TimestampUtc, record.AskPrice);
+        // [GÜNCELLENDİ] Anchor noktasında da akıllı mantık devreye girer
+        return new PricePointDto(record.TimestampUtc, record.LastPrice ?? ((record.AskPrice + record.BidPrice) / 2m));
     }
 }

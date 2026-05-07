@@ -1,4 +1,3 @@
-using Yastık6.Api.Application.Common.Interfaces;
 
 namespace Yastık6.Api.Infrastructure.Providers.YahooFinance;
 
@@ -15,7 +14,7 @@ public sealed class YahooCryptoClient : YahooFinanceBase
     public override string ProviderName => "YahooCrypto";
     
     // Cryptocurrencies trade 24/7 and require frequent updates due to high volatility.
-    public override TimeSpan RefreshInterval => TimeSpan.FromMinutes(1);
+    public override TimeSpan RefreshInterval => TimeSpan.FromMinutes(5);
     
     protected override string[] TargetSymbolTypes => new[] { "CRYPTO" };
 
