@@ -31,6 +31,9 @@ public sealed class BinanceClient : IBinanceClient
             // Binance V3 BookTicker Endpoint'i: Anlık en iyi alış/satış makasını verir
             var response = await _client.GetAsync("/api/v3/ticker/bookTicker", ct);
             response.EnsureSuccessStatusCode();
+            
+            var rawJsonString = await response.Content.ReadAsStringAsync(ct);
+            _logger.LogInformation("[RÖNTGEN] FreeCurrency'den Gelen Cevap: {Json}", rawJsonString);
 
             var rawData = await response.Content.ReadFromJsonAsync<List<BinanceBookTickerRaw>>(cancellationToken: ct);
 
