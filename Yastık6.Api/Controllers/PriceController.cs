@@ -25,8 +25,10 @@ public sealed class PricesController : ControllerBase
     {
         // The background worker constantly updates _store.Current.
         // If the application just started and the cache is temporarily empty, return an empty array instantly.
-        var cachedData = _store.Current ?? new LatestPricesResponse(Array.Empty<LatestPriceResponse>());
-        
+        var cachedData = _store.Current ?? new LatestPricesResponse(
+            Items: Array.Empty<LatestPriceResponse>(), 
+            ComputedAtUtc: DateTimeOffset.UtcNow
+        );        
         return Ok(cachedData);
     }
 
