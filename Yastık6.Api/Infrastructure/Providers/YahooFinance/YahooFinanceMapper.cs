@@ -119,6 +119,14 @@ public static class YahooFinanceMapper
         {
             realName = security.Fields["ShortName"].ToString();
         }
+        
+        decimal changeRate = 0m;
+
+        if (security.Fields.TryGetValue("RegularMarketChangePercent", out var changePctObj) && changePctObj != null)
+        {
+            changeRate = Convert.ToDecimal(changePctObj);
+        }
+
 
         return new LatestPriceResponse(
             ProductCode: symbolCode,
@@ -127,7 +135,7 @@ public static class YahooFinanceMapper
             Bid: bidPrice,
             Ask: askPrice,
             LastPrice: marketPrice,
-            ChangeRate: 0m,
+            ChangeRate: changeRate,
             FormattedBid: bidPrice.ToString(format, CultureInfo.InvariantCulture),
             FormattedAsk: askPrice.ToString(format, CultureInfo.InvariantCulture),
             AsOfUtc: asOfUtc,

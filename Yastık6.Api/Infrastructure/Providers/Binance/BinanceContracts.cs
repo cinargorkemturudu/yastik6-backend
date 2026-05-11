@@ -14,3 +14,15 @@ public sealed record BinanceBookTickerRaw
     [JsonPropertyName("askPrice")] 
     public string AskPrice { get; init; } = "0";
 }
+
+public sealed record BinanceTicker24HrRaw
+{
+    [JsonPropertyName("symbol")]
+    public string Symbol { get; init; } = string.Empty;
+
+    [JsonPropertyName("lastPrice")]
+    public string LastPrice { get; init; } = "0";
+
+    [JsonPropertyName("priceChangePercent")]
+    public string PriceChangePercent { get; init; } = "0";
+}

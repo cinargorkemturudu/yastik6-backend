@@ -1,4 +1,3 @@
-using System.Net.Http.Json;
 using Yastık6.Api.Application.Features.Prices;
 
 namespace Yastık6.Api.Infrastructure.Providers.Binance;
@@ -9,6 +8,9 @@ public sealed class BinanceClient : IBinanceClient
     private readonly ILogger<BinanceClient> _logger;
 
     public string ProviderName => "Binance";
+
+    private List<BinanceTicker24HrRaw>? _bulkCache;
+    private DateTime _bulkCacheTime;
 
     // Kripto pazarı asla uyumaz
     public bool IsMarketOpen() => true;
@@ -62,5 +64,25 @@ public sealed class BinanceClient : IBinanceClient
             // Polly'nin hatayı yakalayıp tekrar denemesi için fırlatıyoruz
             throw; 
         }
+    }
+    
+    public async Task<List<BinanceTicker24HrRaw>> GetBulk24HrTickersAsync(CancellationToken ct = default)
+    {
+        // Yedek olarak çağrıldığında Binance'i yormamak için 5 dakikalık RAM Cache!
+        if (_bulkCache != null && (DateTime.UtcNow - _bulkCacheTime).TotalMinutes < 5)
+        {
+            return _bulkCache;
+        }
+
+        // TAM İSTEDİĞİN GİBİ: Parametresiz, tüm piyasayı tek seferde çeken "Genel İstek"
+        var response = await _client.GetAsync("/api/v3/ticker/24hr", ct);
+        if (response.IsSuccessStatusCode)
+        {
+            _bulkCache = await response.Content.ReadFromJsonAsync<List<BinanceTicker24HrRaw>>(cancellationToken: ct);
+            _bulkCacheTime = DateTime.UtcNow;
+            return _bulkCache ?? new();
+        }
+        
+        return new();
     }
 }
