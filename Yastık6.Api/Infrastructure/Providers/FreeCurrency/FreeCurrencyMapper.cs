@@ -41,7 +41,7 @@ public static class FreeCurrencyMapper
                 results.Add(new LatestPriceResponse(
                     ProductCode: kvp.Key,
                     Name: kvp.Value.PrettyName,
-                    Type: "FOREX",
+                    Type: "CURRENCY",
                     Bid: globalRate,
                     Ask: globalRate,
                     LastPrice: globalRate, // Global kurda işlem fiyatı = orta kur kabul edilir

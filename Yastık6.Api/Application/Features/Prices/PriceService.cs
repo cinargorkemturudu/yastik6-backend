@@ -8,6 +8,8 @@ public sealed class PriceService : IPriceService
     private readonly IPriceHistoryRepository _repository; 
     private readonly ISystemClock _clock;
     private readonly IMemoryCache _cache;
+    
+    // Thundering Herd (Sürü Psikolojisi) önlemi için kilit mekanizması
     private static readonly SemaphoreSlim _cacheLock = new SemaphoreSlim(1, 1);
 
     public PriceService(
@@ -27,11 +29,14 @@ public sealed class PriceService : IPriceService
     {
         var cacheKey = $"HistoryChart_{productCode}_{range}";
 
+        // 1. Önbellekte (Cache) varsa direkt dön
         if (!_cache.TryGetValue(cacheKey, out IReadOnlyList<PricePointDto>? points))
         {
+            // 2. Kilit: Aynı anda sadece 1 istek veritabanına inebilir
             await _cacheLock.WaitAsync(ct);
             try
             {
+                // Double-check: Kapıda beklerken başka bir istek cache'i doldurmuş olabilir
                 if (!_cache.TryGetValue(cacheKey, out points))
                 {
                     var since = CalculateSinceDate(range);
@@ -40,10 +45,10 @@ public sealed class PriceService : IPriceService
             
                     // 1. Veritabanından mevcut (seyrek/sparse) veriyi çek
                     var rawPoints = await _repository.GetBucketedHistoryAsync(productCode, since, bucketSize, ct);
-                
+                    
                     // 2. LOCF algoritmasının referans alacağı 'Çapa' noktasını geçmişten çek
                     var anchorPoint = await _repository.GetLastPriceBeforeAsync(productCode, since, ct);
-
+                    
                     // 3. LOCF (Fill-Forward) algoritmasını uygulayarak boşlukları doldur
                     points = ApplyFillForward(rawPoints, anchorPoint, since, now, bucketSize);
 
@@ -67,8 +72,7 @@ public sealed class PriceService : IPriceService
         );
     }
 
-    // --- YENİ EKLENEN LOCF (FILL-FORWARD) ALGORİTMASI ---
-    // --- YENİ EKLENEN LOCF (FILL-FORWARD) ALGORİTMASI ---
+    // --- LOCF (LAST OBSERVATION CARRIED FORWARD) ALGORİTMASI ---
     private IReadOnlyList<PricePointDto> ApplyFillForward(
         IReadOnlyList<PricePointDto> rawPoints,
         PricePointDto? anchorPoint,
@@ -78,18 +82,17 @@ public sealed class PriceService : IPriceService
     {
         var densePoints = new List<PricePointDto>();
         
-        // 1. DÜZELTME: Zamanı kesinlikle zilin çaldığı andan (since) başlatıyoruz. 
-        // Rakibin ilk yumruğunu (rawPoints[0]) beklemiyoruz veya ekseni kaydırmıyoruz.
+        // Zamanı kesinlikle zilin çaldığı andan (since) başlatıyoruz. 
         var currentBucket = since;
         
-        // 2. DÜZELTME: Başlangıç fiyatımız dünkü kasa (anchorPoint). 
+        // Başlangıç fiyatımız dünkü kasa (anchorPoint). 
         // Eğer o da yoksa 0 (veya raw'dan gelen ilk değer). Boşa gitmesini engelledik.
         decimal lastKnownPrice = 0m;
         if (anchorPoint != null)
         {
             lastKnownPrice = anchorPoint.Price;
         }
-        else if (rawPoints.Count > 0)
+        else if (rawPoints != null && rawPoints.Count > 0)
         {
             lastKnownPrice = rawPoints[0].Price;
         }

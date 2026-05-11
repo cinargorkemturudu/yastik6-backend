@@ -3,6 +3,7 @@ using Yastık6.Api.Application.Features.Prices;
 using Yastık6.Api.Domain.Entities;
 using Yastık6.Api.Infrastructure.Caching;
 using Yastık6.Api.Infrastructure.Alerts;
+using Yastık6.Api.Infrastructure.Providers.Binance;
 
 namespace Yastık6.Api.Infrastructure.BackgroundJobs;
 
@@ -19,8 +20,11 @@ public sealed class PriceSnapshotRefresher : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IAlertService _alertService;
     
-    // Ensures thread-safe updates to the in-memory snapshot dictionary
+    // Anlık fiyat güncellemelerinin çakışmasını önleyen kilit
     private static readonly object CacheLock = new object();
+    
+    // Sistemi ilk açılışta veritabanına yazdığımız coinleri hatırlaması için kilit (Toplu Can Suyu için)
+    private static readonly HashSet<string> _seededSymbols = new();
 
     public PriceSnapshotRefresher(
         IPriceSnapshotStore snapshotStore,
@@ -48,7 +52,7 @@ public sealed class PriceSnapshotRefresher : BackgroundService
             _logger.LogInformation("Price refresh service started. Discovered providers: {Count}", providerTypes.Count);
         }
 
-        // Spawn a dedicated background task for each price provider
+        // Her fiyat sağlayıcısı (Binance, Yahoo, Harem) için ayrı bir asenkron görev başlat
         var providerTasks = providerTypes.Select(type => RunProviderLoopAsync(type, stoppingToken));
 
         return Task.WhenAll(providerTasks);
@@ -77,14 +81,14 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                 var clock = scope.ServiceProvider.GetRequiredService<ISystemClock>();
                 var repository = scope.ServiceProvider.GetRequiredService<IPriceHistoryRepository>();
 
-                // Respect market hours after the initial startup run
+                // İlk başlangıçtan sonra borsa saatlerine (Hafta sonu vs.) saygı göster
                 if (!isFirstRun && !provider.IsMarketOpen())
                 {
                     await Task.Delay(provider.RefreshInterval, stoppingToken);
                     continue;
                 }
 
-                // Fetch fresh data from the external source
+                // API'den taze veriyi çek
                 var prices = await provider.GetMarketOverviewAsync(stoppingToken);
                 
                 _logger.LogDebug("[{Provider}] fetched and updated {Count} records.", provider.ProviderName, prices.Count);
@@ -93,13 +97,13 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                 {
                     // -----------------------------------------------------------------------
                     // BFF ARCHITECTURE: USD TO TRY CONVERSION STRATEGY
-                    // Attempt to find the freshest USDTRY rate. Check the current fetched batch first, 
-                    // then fallback to the in-memory cache.
                     // -----------------------------------------------------------------------
                     var currentUsdPrice = prices.FirstOrDefault(p => p.ProductCode == "USDTRY=X")?.Ask
                                           ?? _snapshotStore.Current?.Items.FirstOrDefault(p => p.ProductCode == "USDTRY=X")?.Ask 
                                           ?? 0m;
 
+                    // [DÜZELTME]: Veritabanına yazılacak kayıt listesi döngüden ÖNCE oluşturuldu.
+                    var recordsToInsert = new List<PriceRecord>();
                     var calculatedPrices = new List<LatestPriceResponse>();
 
                     foreach (var price in prices)
@@ -107,15 +111,59 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                         var previousClose = _previousCloseStore.GetPreviousClose(price.ProductCode);
                         decimal changeRate = 0m;
 
-                        // Calculate daily percentage change based on previous close
                         if (previousClose.HasValue && previousClose.Value > 0)
                         {
+                            // 1. ANA SİSTEM (NORMAL AKIŞ): DB'mizde veri var, hızlıca hesapla.
                             changeRate = ((price.Ask - previousClose.Value) / previousClose.Value) * 100m;
+                        }
+                        else 
+                        {
+                            // 2. YEDEK PLAN (FALLBACK & İLK AÇILIŞ): DB'miz boşsa veya veri patladıysa
+                            if (provider is IBinanceClient binanceClient)
+                            {
+                                // Tüm piyasayı tek seferde (RAM Cache'li) getir
+                                var bulkData = await binanceClient.GetBulk24HrTickersAsync(stoppingToken);
+                                
+                                var coinData = bulkData.FirstOrDefault(x => x.Symbol == price.ProductCode.Replace("-USD", "USDT"));
+                                
+                                if (coinData != null && 
+                                    decimal.TryParse(coinData.PriceChangePercent, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var fallbackRate) &&
+                                    decimal.TryParse(coinData.LastPrice, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var lastPrice))
+                                {
+                                    changeRate = fallbackRate; 
+                                    
+                                    // Eğer bu coin'i daha önce veritabanına ilk can suyu olarak basmadıysak...
+                                    if (!_seededSymbols.Contains(price.ProductCode))
+                                    {
+                                        // Gelen yüzdeden dünkü fiyatı tersine matematik ile bul
+                                        var calculatedPreviousClose = lastPrice / (1m + (fallbackRate / 100m));
+                                        
+                                        // Veritabanına dünün tarihiyle ekle ki sonraki döngülerde "1. ANA SİSTEM" çalışsın.
+                                        recordsToInsert.Add(new PriceRecord
+                                        {
+                                            Id = Guid.NewGuid(),
+                                            ProductCode = price.ProductCode,
+                                            Source = price.Source,
+                                            AskPrice = calculatedPreviousClose,
+                                            BidPrice = calculatedPreviousClose,
+                                            LastPrice = calculatedPreviousClose,
+                                            TimestampUtc = clock.UtcNow.Date.AddDays(-1) 
+                                        });
+                                        
+                                        _seededSymbols.Add(price.ProductCode); 
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                // Yahoo gibi hazır ChangeRate yollayan sistemler için
+                                changeRate = price.ChangeRate;
+                            }
                         }
 
                         var finalPrice = price with { ChangeRate = Math.Round(changeRate, 2) };
 
-                        // Convert USD-based Crypto assets to TRY for the frontend
+                        // Kripto paraları TL'ye çevirme (BFF)
                         if (finalPrice.Type == "CRYPTO" && currentUsdPrice > 0)
                         {
                             finalPrice = finalPrice with 
@@ -130,9 +178,7 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                         calculatedPrices.Add(finalPrice);
                     }
 
-                    var recordsToInsert = new List<PriceRecord>();
-
-                    // Synchronize state updates to prevent race conditions across provider threads
+                    // İşlemleri State (RAM Cache) ve Kalkan kilitlerine alıyoruz
                     lock (CacheLock)
                     {
                         var currentSnapshot = _snapshotStore.Current;
@@ -141,13 +187,11 @@ public sealed class PriceSnapshotRefresher : BackgroundService
 
                         foreach (var newPrice in calculatedPrices)
                         {
-                            // --- SHIELD 1: ZERO-PRICE ANOMALY PREVENTION ---
+                            // --- SHIELD 1: SIFIR FİYAT KALKANI ---
                             if (newPrice.Ask <= 0 || newPrice.Bid <= 0)
                             {
-                                _logger.LogWarning("[SHIELD] {Code} returned zero/negative price. Data rejected! Source: {Source}", newPrice.ProductCode, newPrice.Source);
-                                
+                                _logger.LogWarning("[SHIELD] {Code} returned zero/negative price. Source: {Source}", newPrice.ProductCode, newPrice.Source);
                                 _ = _alertService.SendAlertAsync($"⚠️ *ZERO PRICE REJECTED*\nSymbol: `{newPrice.ProductCode}`\nSource: `{newPrice.Source}`\nPrice: `{newPrice.Ask}`\n_System retained the previous valid price._", stoppingToken);
-                                
                                 continue;
                             }
 
@@ -155,24 +199,21 @@ public sealed class PriceSnapshotRefresher : BackgroundService
 
                             if (currentDict.TryGetValue(newPrice.ProductCode, out var existingPrice))
                             {
-                                // --- SHIELD 2: FLASH CRASH / SPIKE PREVENTION ---
+                                // --- SHIELD 2: FLASH CRASH (ANİ ÇÖKÜŞ) KALKANI ---
                                 if (existingPrice.Ask > 0)
                                 {
                                     var instantChange = Math.Abs((newPrice.Ask - existingPrice.Ask) / existingPrice.Ask * 100m);
                                     
-                                    // Reject data if price shifts by more than 40% in a single tick
+                                    // Eğer saniyeler içinde fiyat %40 oynarsa veriyi reddet
                                     if (instantChange > 40m) 
                                     {
-                                        _logger.LogWarning("[SHIELD] Unreasonable deviation detected for {Code} ({Rate:N2}%). Data rejected! Old: {Old}, New: {New}, Source: {Source}", 
-                                            newPrice.ProductCode, instantChange, existingPrice.Ask, newPrice.Ask, newPrice.Source);
-                                            
-                                        _ = _alertService.SendAlertAsync($"🚨 *FLASH CRASH DETECTED*\nSymbol: `{newPrice.ProductCode}`\nOld: `{existingPrice.Ask}`\nNew: `{newPrice.Ask}`\nDeviation: `%{instantChange:N2}`\nSource: `{newPrice.Source}`\n\n*Manual review may be required!*", stoppingToken);
-                                        
+                                        _logger.LogWarning("[SHIELD] Unreasonable deviation detected for {Code} ({Rate:N2}%). Data rejected!", newPrice.ProductCode, instantChange);
+                                        _ = _alertService.SendAlertAsync($"🚨 *FLASH CRASH DETECTED*\nSymbol: `{newPrice.ProductCode}`\nOld: `{existingPrice.Ask}`\nNew: `{newPrice.Ask}`\nDeviation: `%{instantChange:N2}`\nSource: `{newPrice.Source}`", stoppingToken);
                                         continue;
                                     }
                                 }
 
-                                // Avoid redundant database inserts if the price hasn't moved
+                                // Fiyat değişmediyse veritabanı log şişmesini engelle
                                 if (existingPrice.Ask == newPrice.Ask && existingPrice.Bid == newPrice.Bid)
                                 {
                                     hasPriceChanged = false; 
@@ -193,18 +234,18 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                                 });
                             }
 
-                            // Update or insert the latest validated price into the dictionary
+                            // Doğrulanan yeni veriyi hafızaya at
                             currentDict[newPrice.ProductCode] = newPrice;
                         }
 
-                        // Commit the updated state to the in-memory store with the current UTC timestamp
+                        // Ön belleği güncelle
                         _snapshotStore.Set(new LatestPricesResponse(
                             Items: currentDict.Values.ToList(), 
                             ComputedAtUtc: DateTimeOffset.UtcNow
                         ));
                     }
 
-                    // Bulk insert historical records asynchronously outside the lock
+                    // Yeni oluşan geçerli fiyatları (ve ilk gün can sularını) DB'ye toplu kaydet
                     if (recordsToInsert.Count > 0)
                     {
                         await repository.AddPriceRecordsAsync(recordsToInsert, stoppingToken);
@@ -217,20 +258,16 @@ public sealed class PriceSnapshotRefresher : BackgroundService
             }
             catch (OperationCanceledException)
             {
-                // Graceful shutdown requested
-                break;
+                break; // Kapanış talebi
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "A critical error occurred while fetching prices for provider {ProviderType}.", providerType.Name);
                 
                 await _alertService.SendAlertAsync(
-                    $"⚠️ *Provider Crashed: {providerType.Name}*\n" +
-                    $"Time: `{DateTime.UtcNow:HH:mm:ss} UTC`\n" +
-                    $"Error: `{ex.Message}`", 
+                    $"⚠️ *Provider Crashed: {providerType.Name}*\nTime: `{DateTime.UtcNow:HH:mm:ss} UTC`\nError: `{ex.Message}`", 
                     stoppingToken);
 
-                // Backoff before retrying to prevent aggressive loop spinning on failure
                 await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
             }
         }
