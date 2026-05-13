@@ -7,8 +7,8 @@ public static class HaremDataMapper
 {
     private static readonly CultureInfo TrCulture = new("tr-TR");
 
-    // [KRİTİK DEĞİŞİKLİK]: Tuple yapısı (Type, TargetCode, PrettyName) olarak 3 parametreli hale getirildi.
-    private static readonly Dictionary<string, (string Type, string TargetCode, string PrettyName)> AllowedAssets = new()
+    // [DÜZELTME 1]: Sözlük artık büyük/küçük harf duyarsız (Case-Insensitive) hale getirildi.
+    private static readonly Dictionary<string, (string Type, string TargetCode, string PrettyName)> AllowedAssets = new(StringComparer.OrdinalIgnoreCase)
     {
         { "GRAM ALTIN", ("METAL", "GRAM_ALTIN", "Gram Altın") },
         { "Has Altın", ("METAL", "HAS_ALTIN", "Has Altın") },
@@ -31,7 +31,8 @@ public static class HaremDataMapper
 
     public static LatestPriceResponse? MapToResponse(HaremClient.HaremItemRaw item)
     {
-        if (!AllowedAssets.TryGetValue(item.Key, out var assetInfo))
+        // Gelen key değerinin etrafındaki olası boşlukları Trim() ile temizliyoruz.
+        if (string.IsNullOrWhiteSpace(item.Key) || !AllowedAssets.TryGetValue(item.Key.Trim(), out var assetInfo))
         {
             return null;
         }
@@ -43,7 +44,7 @@ public static class HaremDataMapper
 
         var discoveryCode = assetInfo.TargetCode;
         var assetType = assetInfo.Type;
-        var prettyName = assetInfo.PrettyName; // <-- Arayüze gidecek şık isim
+        var prettyName = assetInfo.PrettyName; 
         
         string formattedBid = bid.ToString("N2", CultureInfo.InvariantCulture);
         string formattedAsk = ask.ToString("N2", CultureInfo.InvariantCulture);
@@ -64,7 +65,7 @@ public static class HaremDataMapper
 
         return new LatestPriceResponse(
             ProductCode: discoveryCode,
-            Name: prettyName, // [KRİTİK]: Artık "ESKI_CEYREK" yerine "Eski Çeyrek" dönüyor.
+            Name: prettyName, 
             Type: assetType,
             Bid: bid,
             Ask: ask,
@@ -78,18 +79,30 @@ public static class HaremDataMapper
         );
     }
 
+    // [DÜZELTME 2]: Akıllı Fiyat Ayrıştırıcı
     private static bool TryParseTurkishMoney(string? raw, out decimal value)
     {
         value = 0;
         if (string.IsNullOrWhiteSpace(raw)) return false;
+        
+        raw = raw.Trim();
+
+        // Eğer Harem API uluslararası formata (örn: 3150.50) geçmişse:
+        // İçinde virgül YOKSA ve nokta VARSA, noktanın ondalık ayracı olduğunu anla.
+        if (!raw.Contains(',') && raw.Contains('.'))
+        {
+             return decimal.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out value);
+        }
+
+        // Eğer geleneksel Türkçe formatındaysa (örn: 3.150,50 veya sadece 3150,50):
         var sanitized = raw.Replace(".", "");
-        return decimal.TryParse(sanitized, NumberStyles.Number, TrCulture, out value);
+        return decimal.TryParse(sanitized, NumberStyles.Any, TrCulture, out value);
     }
 
     private static DateTimeOffset ParseTurkishDate(string? raw)
     {
         if (string.IsNullOrWhiteSpace(raw)) return DateTimeOffset.UtcNow;
-        if (DateTime.TryParseExact(raw, "dd.MM.yyyy HH:mm:ss", TrCulture, DateTimeStyles.AssumeLocal, out var dt))
+        if (DateTime.TryParseExact(raw.Trim(), "dd.MM.yyyy HH:mm:ss", TrCulture, DateTimeStyles.AssumeLocal, out var dt))
         {
             return dt.ToUniversalTime();
         }
