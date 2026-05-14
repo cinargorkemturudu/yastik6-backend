@@ -103,6 +103,7 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                                           ?? 0m;
 
                     // [DÜZELTME]: Veritabanına yazılacak kayıt listesi döngüden ÖNCE oluşturuldu.
+                    // [DÜZELTME]: Veritabanına yazılacak kayıt listesi döngüden ÖNCE oluşturuldu.
                     var recordsToInsert = new List<PriceRecord>();
                     var calculatedPrices = new List<LatestPriceResponse>();
 
@@ -119,39 +120,23 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                         else 
                         {
                             // 2. YEDEK PLAN (FALLBACK & İLK AÇILIŞ): DB'miz boşsa veya veri patladıysa
+                            // [MİMARİ DÜZELTME]: Eski sistemdeki "hesaplanmış sahte dünkü fiyatı veritabanına kaydetme (Seed)" işlemi TAMAMEN SİLİNDİ.
+// Artık sadece arayüzde % değişimi doğru göstermek için matematiksel bir hesaplama yapıyoruz, ancak bunu KALICI TARİHE (DB'ye) YAZMIYORUZ.
+
                             if (provider is IBinanceClient binanceClient)
                             {
                                 // Tüm piyasayı tek seferde (RAM Cache'li) getir
                                 var bulkData = await binanceClient.GetBulk24HrTickersAsync(stoppingToken);
-                                
+    
                                 var coinData = bulkData.FirstOrDefault(x => x.Symbol == price.ProductCode.Replace("-USD", "USDT"));
-                                
+    
                                 if (coinData != null && 
-                                    decimal.TryParse(coinData.PriceChangePercent, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var fallbackRate) &&
-                                    decimal.TryParse(coinData.LastPrice, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var lastPrice))
+                                    decimal.TryParse(coinData.PriceChangePercent, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var fallbackRate))
                                 {
                                     changeRate = fallbackRate; 
-                                    
-                                    // Eğer bu coin'i daha önce veritabanına ilk can suyu olarak basmadıysak...
-                                    if (!_seededSymbols.Contains(price.ProductCode))
-                                    {
-                                        // Gelen yüzdeden dünkü fiyatı tersine matematik ile bul
-                                        var calculatedPreviousClose = lastPrice / (1m + (fallbackRate / 100m));
-                                        
-                                        // Veritabanına dünün tarihiyle ekle ki sonraki döngülerde "1. ANA SİSTEM" çalışsın.
-                                        recordsToInsert.Add(new PriceRecord
-                                        {
-                                            Id = Guid.NewGuid(),
-                                            ProductCode = price.ProductCode,
-                                            Source = price.Source,
-                                            AskPrice = calculatedPreviousClose,
-                                            BidPrice = calculatedPreviousClose,
-                                            LastPrice = calculatedPreviousClose,
-                                            TimestampUtc = clock.UtcNow.Date.AddDays(-1) 
-                                        });
-                                        
-                                        _seededSymbols.Add(price.ProductCode); 
-                                    }
+        
+                                    // DİKKAT: Eski kodda burada hesaplanan dünkü kapanış `recordsToInsert.Add(...)` ile DB'ye yazılıyordu.
+                                    // O blok tamamen silindi. Veritabanına sadece o anki GERÇEK fiyat yazılacak.
                                 }
                             }
                             else
@@ -164,8 +149,16 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                         var finalPrice = price with { ChangeRate = Math.Round(changeRate, 2) };
 
                         // Kripto paraları TL'ye çevirme (BFF)
-                        if (finalPrice.Type == "CRYPTO" && currentUsdPrice > 0)
+                        if (finalPrice.Type == "CRYPTO")
                         {
+                            // [DÜZELTME]: Race Condition Kalkanı
+                            // USD fiyatı henüz hazır değilse, veriyi sisteme sokma, bir sonraki döngüyü bekle.
+                            if (currentUsdPrice <= 0)
+                            {
+                                _logger.LogWarning("[BFF Shield] USD/TRY oranı henüz hazır değil. {Code} çevirisi bir sonraki döngüye ertelendi.", finalPrice.ProductCode);
+                                continue; 
+                            }
+
                             finalPrice = finalPrice with 
                             {
                                 Bid = finalPrice.Bid * currentUsdPrice,

@@ -80,6 +80,7 @@ public static class HaremDataMapper
     }
 
     // [DÜZELTME 2]: Akıllı Fiyat Ayrıştırıcı
+    // [DÜZELTME 2]: Akıllı Fiyat Ayrıştırıcı
     private static bool TryParseTurkishMoney(string? raw, out decimal value)
     {
         value = 0;
@@ -87,16 +88,28 @@ public static class HaremDataMapper
         
         raw = raw.Trim();
 
-        // Eğer Harem API uluslararası formata (örn: 3150.50) geçmişse:
-        // İçinde virgül YOKSA ve nokta VARSA, noktanın ondalık ayracı olduğunu anla.
-        if (!raw.Contains(',') && raw.Contains('.'))
-        {
-             return decimal.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out value);
-        }
+        int lastComma = raw.LastIndexOf(',');
+        int lastDot = raw.LastIndexOf('.');
 
-        // Eğer geleneksel Türkçe formatındaysa (örn: 3.150,50 veya sadece 3150,50):
-        var sanitized = raw.Replace(".", "");
-        return decimal.TryParse(sanitized, NumberStyles.Any, TrCulture, out value);
+        // Format: International (e.g., 3,150.50 or 3150.50)
+        // The dot is the decimal separator because it appears after the comma (or no comma exists)
+        if (lastDot > lastComma)
+        {
+            var sanitized = raw.Replace(",", ""); // Strip the thousands separator
+            return decimal.TryParse(sanitized, NumberStyles.Any, CultureInfo.InvariantCulture, out value);
+        }
+        // Format: Turkish (e.g., 3.150,50 or 3150,50)
+        // The comma is the decimal separator because it appears after the dot
+        else if (lastComma > lastDot)
+        {
+            var sanitized = raw.Replace(".", ""); // Strip the thousands separator
+            return decimal.TryParse(sanitized, NumberStyles.Any, TrCulture, out value);
+        }
+        // Format: Plain number with no decimal points
+        else
+        {
+            return decimal.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out value);
+        }
     }
 
     private static DateTimeOffset ParseTurkishDate(string? raw)

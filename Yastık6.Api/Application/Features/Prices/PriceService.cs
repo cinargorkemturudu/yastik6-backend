@@ -73,6 +73,7 @@ public sealed class PriceService : IPriceService
     }
 
     // --- LOCF (LAST OBSERVATION CARRIED FORWARD) ALGORİTMASI ---
+    // --- LOCF (LAST OBSERVATION CARRIED FORWARD) ALGORİTMASI ---
     private IReadOnlyList<PricePointDto> ApplyFillForward(
         IReadOnlyList<PricePointDto> rawPoints,
         PricePointDto? anchorPoint,
@@ -81,40 +82,32 @@ public sealed class PriceService : IPriceService
         TimeSpan bucketSize)
     {
         var densePoints = new List<PricePointDto>();
-        
-        // Zamanı kesinlikle zilin çaldığı andan (since) başlatıyoruz. 
         var currentBucket = since;
         
-        // Başlangıç fiyatımız dünkü kasa (anchorPoint). 
-        // Eğer o da yoksa 0 (veya raw'dan gelen ilk değer). Boşa gitmesini engelledik.
-        decimal lastKnownPrice = 0m;
-        if (anchorPoint != null)
-        {
-            lastKnownPrice = anchorPoint.Price;
-        }
-        else if (rawPoints != null && rawPoints.Count > 0)
-        {
-            lastKnownPrice = rawPoints[0].Price;
-        }
+        // [MİMARİ DÜZELTME 1]: lastKnownPrice artık Nullable (decimal?).
+        // Eski koddaki "anchor yoksa rawPoints[0]'ı al" mantığını (Backfill) TAMAMEN SİLDİK.
+        // Sadece geçmişte KESİN olarak bildiğimiz bir çapa (anchor) varsa başlatıyoruz.
+        decimal? lastKnownPrice = anchorPoint?.Price;
 
         int i = 0;
         
-        // İstenen bitiş zamanına (Şu an) kadar kovaları adım adım doldur
+        // İstenen bitiş zamanına (Şu an) kadar kovaları adım adım ilerlet
         while (currentBucket <= until)
         {
-            // O anki zaman dilimine (bucket) kadar olan gerçek verileri tara 
-            // ve en güncel fiyatı 'lastKnownPrice' olarak akılda tut.
+            // Zaman tünelinde ilerlerken, o anki kovaya (bucket) düşen GERÇEK bir veri var mı diye bak.
+            // Varsa, lastKnownPrice'ı bu KANITLANMIŞ yeni fiyatla güncelle.
             while (rawPoints != null && i < rawPoints.Count && rawPoints[i].TimestampUtc <= currentBucket)
             {
                 lastKnownPrice = rawPoints[i].Price;
                 i++;
             }
             
-            // O anki zaman dilimi için (fiyat 0 değilse) bir nokta ekle.
-            // Bu sayede liste tamamen boş gelse bile, Anchor'dan aldığı güçle grafiği dümdüz çizer.
-            if (lastKnownPrice > 0)
+            // [MİMARİ DÜZELTME 2]: Noktayı sadece elimizde gerçekliğinden emin olduğumuz bir fiyat varsa çiz.
+            // Eğer lastKnownPrice hala null ise (henüz o tarihlerde sistemde veri toplanmamışsa), 
+            // sessizce pas geç ve grafiği boş bırak. Asla geleceği geçmişe kopyalama.
+            if (lastKnownPrice.HasValue && lastKnownPrice.Value > 0)
             {
-                densePoints.Add(new PricePointDto(currentBucket, lastKnownPrice));
+                densePoints.Add(new PricePointDto(currentBucket, lastKnownPrice.Value));
             }
             
             // Bir sonraki kovaya (bucket) geç

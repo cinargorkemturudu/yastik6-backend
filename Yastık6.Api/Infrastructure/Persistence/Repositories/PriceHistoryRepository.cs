@@ -24,13 +24,13 @@ public sealed class PriceHistoryRepository : IPriceHistoryRepository
     }
 
     public async Task<List<PricePointDto>> GetBucketedHistoryAsync(
-        string productCode, 
-        DateTimeOffset since, 
-        TimeSpan bucketSize, 
+        string productCode,
+        DateTimeOffset since,
+        TimeSpan bucketSize,
         CancellationToken ct = default)
     {
         var bucketSeconds = (long)bucketSize.TotalSeconds;
-        
+
         // SQLite stores DateTimes as text strings behind the scenes.
         // We format the C# DateTime into a string SQLite can natively understand.
         var sinceFormatted = since.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss");
@@ -72,10 +72,10 @@ public sealed class PriceHistoryRepository : IPriceHistoryRepository
         await _context.Prices.AddRangeAsync(records, ct);
         await _context.SaveChangesAsync(ct);
     }
-    
+
     public async Task<IReadOnlyList<PriceRecord>> GetPricesBetweenAsync(
-        DateTimeOffset start, 
-        DateTimeOffset end, 
+        DateTimeOffset start,
+        DateTimeOffset end,
         CancellationToken ct = default)
     {
         return await _context.Prices
@@ -91,7 +91,7 @@ public sealed class PriceHistoryRepository : IPriceHistoryRepository
         // forces the CPU to individually attach thousands of records, causing a massive spike.
         // Instead, we extract the IDs and execute a bulk delete directly on the database.
         var ids = records.Select(r => r.Id).ToList();
-        
+
         if (ids.Count == 0) return;
 
         // Chunking into groups of 500 to stay well under SQLite's expression tree limit for IN (...) clauses
@@ -102,8 +102,9 @@ public sealed class PriceHistoryRepository : IPriceHistoryRepository
                 .ExecuteDeleteAsync(ct);
         }
     }
-    
-    public async Task<Dictionary<string, decimal>> GetPreviousClosePricesAsync(string source, DateTimeOffset cutoff, CancellationToken ct = default)
+
+    public async Task<Dictionary<string, decimal>> GetPreviousClosePricesAsync(string source, DateTimeOffset cutoff,
+        CancellationToken ct = default)
     {
         // Finds records before the cutoff time, groups them by asset code, 
         // and selects the most recent record (highest timestamp) for each group.
@@ -116,20 +117,26 @@ public sealed class PriceHistoryRepository : IPriceHistoryRepository
 
         return previousCloses;
     }
-    
-    public async Task<PricePointDto?> GetLastPriceBeforeAsync(string productCode, DateTimeOffset targetDate, CancellationToken ct = default)
+
+    public async Task<PricePointDto?> GetLastPriceBeforeAsync(string productCode, DateTimeOffset targetDate,
+        CancellationToken ct = default)
     {
-        // Fetches the single most recent record for the specific asset before the target date
+        // [MİMARİ DÜZELTME]: Sonsuz geçmiş taraması engellendi. 
+        // Bir 'Çapa' fiyatı ararken en fazla 30 gün geriye bakılır. 
+        // Eğer 30 gün içinde hiç fiyat yoksa, o varlık o dönemde sistemde "yok" kabul edilir ve CPU yorulmaz.
+        var lookbackLimit = targetDate.AddDays(-30);
+
         var record = await _context.Prices
             .AsNoTracking()
-            .Where(p => p.ProductCode == productCode && p.TimestampUtc < targetDate)
+            .Where(p => p.ProductCode == productCode &&
+                        p.TimestampUtc < targetDate &&
+                        p.TimestampUtc >= lookbackLimit) // <-- YENİ KALKAN BURASI
             .OrderByDescending(p => p.TimestampUtc)
             .FirstOrDefaultAsync(ct);
 
         if (record == null)
             return null;
 
-        // [GÜNCELLENDİ] Anchor noktasında da akıllı mantık devreye girer
         return new PricePointDto(record.TimestampUtc, record.LastPrice ?? ((record.AskPrice + record.BidPrice) / 2m));
     }
 }
