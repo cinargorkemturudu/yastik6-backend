@@ -1,4 +1,4 @@
-# Stage 1: Builder (Belirtilen tam SDK versiyonu)
+﻿# Stage 1: Builder (Belirtilen tam SDK versiyonu)
 FROM mcr.microsoft.com/dotnet/sdk:10.0.100 AS build
 WORKDIR /src
 
