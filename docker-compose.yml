@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  yastik6-api:
+    container_name: yastik6_backend
+    build:
+      context: ./Yastık6.Api      
+      dockerfile: Dockerfile
+    restart: unless-stopped       
+    ports:
+      - "8080:8080"               
+    env_file:
+      - .env                      
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+    volumes:
+      - ./database_data:/app/DatabaseData 
