@@ -95,6 +95,11 @@ public sealed class DataRetentionWorker(
                 Source = g.First().Source, 
                 AskPrice = g.Average(r => r.AskPrice),
                 BidPrice = g.Average(r => r.BidPrice),
+                
+                // [DÜZELTME 3]: LastPrice verisinin kaybolmasını engelliyoruz!
+                // Gruptaki LastPrice değerlerinin de ortalamasını alıp yeni kayda ekliyoruz.
+                LastPrice = g.Average(r => r.LastPrice), 
+                
                 TimestampUtc = new DateTimeOffset(g.Key.BucketKey * bucketSize.Ticks, TimeSpan.Zero)
             })
             .ToList();

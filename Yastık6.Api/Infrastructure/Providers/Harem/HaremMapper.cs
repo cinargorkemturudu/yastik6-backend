@@ -81,6 +81,7 @@ public static class HaremDataMapper
 
     // [DÜZELTME 2]: Akıllı Fiyat Ayrıştırıcı
     // [DÜZELTME 2]: Akıllı Fiyat Ayrıştırıcı
+// [DÜZELTME 2]: Akıllı Fiyat Ayrıştırıcı
     private static bool TryParseTurkishMoney(string? raw, out decimal value)
     {
         value = 0;
@@ -91,21 +92,35 @@ public static class HaremDataMapper
         int lastComma = raw.LastIndexOf(',');
         int lastDot = raw.LastIndexOf('.');
 
-        // Format: International (e.g., 3,150.50 or 3150.50)
-        // The dot is the decimal separator because it appears after the comma (or no comma exists)
-        if (lastDot > lastComma)
+        // Durum 1: Hem nokta hem virgül var (Örn: 2.500,50 veya 2,500.50)
+        if (lastComma > -1 && lastDot > -1)
         {
-            var sanitized = raw.Replace(",", ""); // Strip the thousands separator
+            if (lastDot > lastComma)
+            {
+                // Format: 2,500.50 (Uluslararası) -> Virgülü sil, Invariant ile oku
+                var sanitized = raw.Replace(",", ""); 
+                return decimal.TryParse(sanitized, NumberStyles.Any, CultureInfo.InvariantCulture, out value);
+            }
+            else
+            {
+                // Format: 2.500,50 (Türkçe) -> Noktayı sil, TrCulture ile oku
+                var sanitized = raw.Replace(".", ""); 
+                return decimal.TryParse(sanitized, NumberStyles.Any, TrCulture, out value);
+            }
+        }
+        // Durum 2: Sadece virgül var (Örn: 2500,50) -> Virgül kuruştur, TrCulture anlar
+        else if (lastComma > -1)
+        {
+            return decimal.TryParse(raw, NumberStyles.Any, TrCulture, out value);
+        }
+        // Durum 3: Sadece nokta var (Örn: 2.500) -> HATA BURADAYDI!
+        // Türk sisteminde bu ondalık değil binliktir (2.5 Lira değil, 2500 Liradır). Noktayı yokedip okuyoruz.
+        else if (lastDot > -1)
+        {
+            var sanitized = raw.Replace(".", ""); 
             return decimal.TryParse(sanitized, NumberStyles.Any, CultureInfo.InvariantCulture, out value);
         }
-        // Format: Turkish (e.g., 3.150,50 or 3150,50)
-        // The comma is the decimal separator because it appears after the dot
-        else if (lastComma > lastDot)
-        {
-            var sanitized = raw.Replace(".", ""); // Strip the thousands separator
-            return decimal.TryParse(sanitized, NumberStyles.Any, TrCulture, out value);
-        }
-        // Format: Plain number with no decimal points
+        // Durum 4: Hiçbiri yok (Örn: 2500) -> Dümdüz oku
         else
         {
             return decimal.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out value);
