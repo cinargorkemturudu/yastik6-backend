@@ -5,7 +5,7 @@ namespace Yastık6.Api.Infrastructure.Providers.Binance;
 
 public static class BinanceMapper
 {
-    // Binance sembollerini veritabanı sembollerine ve arayüzde görünecek isimlere eşleyen sözlük
+    // Dictionary mapping Binance symbols to our internal product codes and display names
     private static readonly Dictionary<string, (string TargetCode, string PrettyName)> AllowedAssets = new()
     {
         { "BTCUSDT", ("BTC-USD", "Bitcoin") },
@@ -31,30 +31,27 @@ public static class BinanceMapper
         { "ARBUSDT", ("ARB-USD", "Arbitrum") }
     };
 
-    public static LatestPriceResponse? MapToResponse(BinanceBookTickerRaw item)
+    /// <summary>
+    /// Maps the raw Binance book ticker and 24-hour statistics to the standard LatestPriceResponse DTO.
+    /// </summary>
+    public static LatestPriceResponse? MapToResponse(BinanceBookTickerRaw item, BinanceTicker24HrRaw? stat24h)
     {
-        // 1. Sembol Filtresi: Önce VIP listesine bak (Kurumsal isimler için)
+        // 1. Symbol Filtering: Check against the predefined VIP list first
         if (!AllowedAssets.TryGetValue(item.Symbol, out var assetInfo))
         {
-            // [ÖĞRETİCİ NOT]: TryGetValue false dönerse coin VIP listede yoktur.
-            // Eskiden burada direkt "return null;" vardı. Şimdi dinamik kalkanı devreye sokuyoruz.
-            
-            // Eğer sembol "USDT" ile bitiyorsa (ve sadece "USDT" değilse, yani boyu 4'ten büyükse)
+            // Dynamic fallback: If the symbol ends with "USDT" and is longer than 4 characters
             if (item.Symbol.EndsWith("USDT") && item.Symbol.Length > 4)
             {
-                // Substring(0, Uzunluk - 4): "PEPEUSDT" stringinin baştan başla, son 4 harfini (USDT) kes at. Geriye "PEPE" kalır.
                 var baseCoin = item.Symbol.Substring(0, item.Symbol.Length - 4); 
-                
-                // assetInfo değişkenini dinamik olarak dolduruyoruz. (Code: PEPE-USD, Name: PEPE)
                 assetInfo = ($"{baseCoin}-USD", baseCoin); 
             }
             else
             {
-                return null; 
+                return null; // Ignore non-USDT pairs or invalid symbols
             }
         }
 
-        // 2. Fiyat Parse: String fiyatları decimal'e çevir
+        // 2. Price Parsing: Convert string prices to decimal
         if (!TryParseCryptoPrice(item.BidPrice, out var bid) || 
             !TryParseCryptoPrice(item.AskPrice, out var ask))
         {
@@ -64,13 +61,20 @@ public static class BinanceMapper
         if (bid <= 0 || ask <= 0) return null;
 
         var asOfUtc = DateTimeOffset.UtcNow;
-        // Kripto pazarı 7/24 açık olduğu için fiyat geçerlilik süresini 1 dakika veriyoruz
+        // Crypto markets are 24/7; set a short validity period (1 minute) for high volatility
         var validUntilUtc = asOfUtc.AddMinutes(1);
 
-        // 3. Last Price: Sektör standardı gereği Binance gibi merkezi borsalarda 
-        // son işlem fiyatı yerine makas çok dar olduğu için (Bid+Ask)/2 orta fiyatını LastPrice olarak atıyoruz.
-        // Bu değer DTO'dan PriceHistoryRepository'ye geçecek.
+        // 3. Last Price Calculation: Use the mid-price of the bid-ask spread as the last price
+        // This is standard practice for centralized exchanges with very tight spreads
         var lastPrice = (bid + ask) / 2.0m;
+
+        // 4. Change Rate: Use the 24-hour API fallback rate if available, otherwise default to 0
+        // This value acts as a fallback for the PriceProcessor if the database has no prior closing record
+        decimal changeRate = 0m;
+        if (stat24h != null && decimal.TryParse(stat24h.PriceChangePercent, NumberStyles.Any, CultureInfo.InvariantCulture, out var apiRate))
+        {
+            changeRate = apiRate;
+        }
 
         return new LatestPriceResponse(
             ProductCode: assetInfo.TargetCode,
@@ -78,8 +82,8 @@ public static class BinanceMapper
             Type: "CRYPTO",
             Bid: bid,
             Ask: ask,
-            LastPrice: lastPrice, // Yeni eklenen alan!
-            ChangeRate: 0m,       // ChangeRate, PriceSnapshotRefresher tarafından ezilip hesaplanacak
+            LastPrice: lastPrice, 
+            ChangeRate: changeRate, 
             FormattedBid: bid.ToString("N2", CultureInfo.InvariantCulture),
             FormattedAsk: ask.ToString("N2", CultureInfo.InvariantCulture),
             AsOfUtc: asOfUtc,
