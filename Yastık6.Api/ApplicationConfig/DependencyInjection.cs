@@ -12,7 +12,7 @@ using Yastık6.Api.Infrastructure.Providers.Harem;
 using Yastık6.Api.Infrastructure.Providers.YahooFinance; 
 using Yastık6.Api.Infrastructure.Providers.Binance; 
 using Yastık6.Api.Infrastructure.Providers.FreeCurrency; 
-using Yastık6.Api.Infrastructure.Alerts; // [YENİ] Watchdog için eklendi
+using Yastık6.Api.Infrastructure.Alerts; 
 using Yastık6.Api.Infrastructure.Time;
 
 namespace Yastık6.Api.ApplicationConfig;
@@ -35,6 +35,11 @@ public static class DependencyInjection
         services.AddScoped<IValidator<(string productCode, PriceHistoryRange range)>, GetHistoryValidator>();
 
         services.AddSingleton<IPriceSnapshotStore, PriceSnapshotStore>();
+        
+        // [YENİ EKLENDİ]: Clean Architecture İş Hattı (Pipeline) Kayıtları
+        services.AddSingleton<PriceShieldValidator>();
+        services.AddSingleton<IPriceProcessor, PriceProcessor>();
+
         services.AddHostedService<PriceSnapshotRefresher>();
         
         // --- WATCHDOG (TELEGRAM ALARM) CONFIGURATION ---
@@ -74,7 +79,7 @@ public static class DependencyInjection
 
         services.AddTransient<IPriceProvider>(sp => sp.GetRequiredService<IHaremClient>());
         
-        // --- BINANCE CLIENT CONFIGURATION ---
+        // --- BINANCE CLIENT CONFIGURATION ---I'm
         services.AddHttpClient<IBinanceClient, BinanceClient>(client =>
         {
             client.BaseAddress = new Uri("https://api.binance.com");

@@ -12,10 +12,10 @@ public sealed class BinanceClient : IBinanceClient
     private List<BinanceTicker24HrRaw>? _bulkCache;
     private DateTime _bulkCacheTime;
 
-    // Kripto pazarı asla uyumaz
+    // Crypto markets operate 24/7/365
     public bool IsMarketOpen() => true;
 
-    // Limitleri çok geniş olduğu için 3 saniyede bir çekebiliriz
+    // Binance rate limits allow frequent polling; fetching every 3 seconds is safe
     public TimeSpan RefreshInterval => TimeSpan.FromSeconds(3);
     
     public TimeSpan MarketCloseTime => TimeSpan.Zero;
@@ -30,26 +30,31 @@ public sealed class BinanceClient : IBinanceClient
     {
         try
         {
-            // Binance V3 BookTicker Endpoint'i: Anlık en iyi alış/satış makasını verir
+            // 1. Fetch real-time Best Bid/Ask prices via the BookTicker endpoint
             var response = await _client.GetAsync("/api/v3/ticker/bookTicker", ct);
             response.EnsureSuccessStatusCode();
             
-            var rawJsonString = await response.Content.ReadAsStringAsync(ct);
-            _logger.LogInformation("[RÖNTGEN] FreeCurrency'den Gelen Cevap: {Json}", rawJsonString);
-
             var rawData = await response.Content.ReadFromJsonAsync<List<BinanceBookTickerRaw>>(cancellationToken: ct);
 
             if (rawData is null || rawData.Count == 0)
             {
-                _logger.LogWarning("Binance API boş veya geçersiz veri döndü.");
+                _logger.LogWarning("Binance API returned empty or invalid data for BookTicker.");
                 return new List<LatestPriceResponse>();
             }
 
+            // 2. Fetch 24-hour statistics to provide a fallback change rate for new databases
+            var stats24h = await GetBulk24HrTickersAsync(ct);
+            var statsDict = stats24h.ToDictionary(x => x.Symbol);
+
             var results = new List<LatestPriceResponse>();
 
+            // 3. Map and merge both datasets into the standard response
             foreach (var item in rawData)
             {
-                var mappedItem = BinanceMapper.MapToResponse(item);
+                // Attempt to retrieve the corresponding 24h stat for the symbol
+                statsDict.TryGetValue(item.Symbol, out var stat);
+
+                var mappedItem = BinanceMapper.MapToResponse(item, stat);
                 if (mappedItem != null)
                 {
                     results.Add(mappedItem);
@@ -60,21 +65,21 @@ public sealed class BinanceClient : IBinanceClient
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Binance API üzerinden veri çekilirken hata oluştu.");
-            // Polly'nin hatayı yakalayıp tekrar denemesi için fırlatıyoruz
+            _logger.LogError(ex, "An error occurred while fetching market overview data from Binance API.");
+            // Rethrow to let the Polly retry policy handle it
             throw; 
         }
     }
     
     public async Task<List<BinanceTicker24HrRaw>> GetBulk24HrTickersAsync(CancellationToken ct = default)
     {
-        // Yedek olarak çağrıldığında Binance'i yormamak için 5 dakikalık RAM Cache!
+        // Implement a 5-minute RAM cache to prevent rate-limiting the 24hr endpoint
         if (_bulkCache != null && (DateTime.UtcNow - _bulkCacheTime).TotalMinutes < 5)
         {
             return _bulkCache;
         }
 
-        // TAM İSTEDİĞİN GİBİ: Parametresiz, tüm piyasayı tek seferde çeken "Genel İstek"
+        // Fetch data for all symbols in a single request without parameters
         var response = await _client.GetAsync("/api/v3/ticker/24hr", ct);
         if (response.IsSuccessStatusCode)
         {
