@@ -47,6 +47,7 @@ try
         {
             o.JsonSerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
             o.JsonSerializerOptions.DictionaryKeyPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
+            o.JsonSerializerOptions.Converters.Add(new Yastık6.Api.Infrastructure.Time.UtcDateTimeConverter());
         });
 
     builder.Services.AddEndpointsApiExplorer();
