@@ -134,6 +134,7 @@ try
     
     builder.Services.AddSingleton<AlertTracker>();
     builder.Services.AddHostedService<DailyReportWorker>();
+    builder.Services.AddHostedService<TelegramCommandListener>();
 
     var app = builder.Build();
 
