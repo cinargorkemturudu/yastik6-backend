@@ -1,7 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Yastık6.Api.Application.Features.Prices;
 using Yastık6.Api.Infrastructure.Persistence;
-using Yastık6.Api.Infrastructure.Alerts; // [YENİ] Watchdog
+using Yastık6.Api.Infrastructure.Alerts; 
 
 namespace Yastık6.Api.Infrastructure.BackgroundJobs;
 
@@ -9,7 +9,7 @@ public class HistoryCacheWarmer : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<HistoryCacheWarmer> _logger;
-    private readonly IAlertService _alertService; // [YENİ]
+    private readonly IAlertService _alertService; 
 
     public HistoryCacheWarmer(
         IServiceProvider serviceProvider, 
@@ -61,9 +61,10 @@ public class HistoryCacheWarmer : BackgroundService
             {
                 _logger.LogError(ex, $"❌ [{range}] Hayalet İşçi çalışırken hata oluştu.");
                 
-                // [WATCHDOG] Performans uyarısı!
+                // [DÜZELTİLDİ]: Sekretere "{Range}" bazlı özel çelik parmak izi verildi!
                 await _alertService.SendAlertAsync(
                     $"🔥 *CACHE WARMER ÇÖKTÜ*\nGrafikler belleğe dizilemedi. Kullanıcı tarafında ({range}) grafiklerinin yüklenmesi ciddi yavaşlayacaktır!\nHata: `{ex.Message}`", 
+                    $"CacheWarmer_{range}_{ex.GetType().Name}", // <- EKLENEN PARMAK İZİ (Örn: CacheWarmer_Week_SqlException)
                     stoppingToken);
             }
 

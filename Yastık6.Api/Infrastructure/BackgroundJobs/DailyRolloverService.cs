@@ -85,9 +85,10 @@ public sealed class DailyRolloverService : BackgroundService
             {
                 _logger.LogCritical(ex, "Gün dönümü servisi çalışırken hata oluştu!");
                 
-                // [WATCHDOG] Finansal hesaplamalar tehlikede!
+                // [DÜZELTİLDİ]: Araya sekreterin istediği o çelik parmak izini (CacheKey) ekledik!
                 await _alertService.SendAlertAsync(
                     $"💀 *KRİTİK HATA: Gün Dönümü (Rollover)*\nGece kapanış fiyatları senkronize edilemedi! Yarınki % kâr/zarar oranları hatalı olabilir.\nHata: `{ex.Message}`", 
+                    ex.GetType().Name, // <- İŞTE EKSİK OLAN PARÇA BURASIYDI
                     stoppingToken);
                 
                 await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken);
