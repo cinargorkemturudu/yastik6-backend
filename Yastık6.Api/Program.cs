@@ -1,7 +1,7 @@
 using System.IO.Compression;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.ResponseCompression;
-using Microsoft.AspNetCore.HttpOverrides; // [EKLENDİ - ÇÖZÜM 1]: Proxy başlıkları için gerekli kütüphane
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
 using Serilog.Events;
@@ -14,7 +14,13 @@ Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Override("System", LogEventLevel.Warning)
     .Enrich.FromLogContext()
     .WriteTo.Console()
-    .WriteTo.File("logs/yastik-api-.txt", rollingInterval: RollingInterval.Day, shared: true)
+    .WriteTo.File(
+        "logs/yastik-api-.txt", 
+        rollingInterval: RollingInterval.Day,
+        fileSizeLimitBytes: 10 * 1024 * 1024, // Dosya boyutu 10MB'ı aşarsa yenisine geçer
+        rollOnFileSizeLimit: true,            // Boyut limitini aktif eder
+        retainedFileCountLimit: 3,            // Sunucuda sadece son 3 günün log dosyasını tutar (Kara Kutu)
+        shared: true)
     .CreateLogger();
 
 try
@@ -23,7 +29,7 @@ try
 
     var builder = WebApplication.CreateBuilder(args);
 
-    // [EKLENDİ - ÇÖZÜM 1]: Reverse Proxy (Nginx, Docker vb.) arkasında gerçek kullanıcı IP'sini alma ayarı
+    // Reverse Proxy (Nginx, Docker vb.) arkasında gerçek kullanıcı IP'sini alma ayarı
     builder.Services.Configure<ForwardedHeadersOptions>(options =>
     {
         options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
@@ -34,11 +40,21 @@ try
     // Replace the default .NET logger with Serilog
     builder.Host.UseSerilog((context, loggerConfiguration) =>
     {
+        // IP adresini hardcoded yapmamak için konfigürasyondan güvenli bir şekilde okuyoruz
+        var seqUrl = context.Configuration["Serilog:SeqServerUrl"] ?? "http://localhost:5341";
+
         loggerConfiguration
             .ReadFrom.Configuration(context.Configuration)
             .Enrich.FromLogContext()
             .WriteTo.Console()
-            .WriteTo.File("logs/yastik-api-.txt", rollingInterval: RollingInterval.Day, shared: true);
+            .WriteTo.Seq(seqUrl) // Çalışma zamanındaki tüm logları Seq paneline akıtır
+            .WriteTo.File(
+                "logs/yastik-api-.txt", 
+                rollingInterval: RollingInterval.Day,
+                fileSizeLimitBytes: 10 * 1024 * 1024,
+                rollOnFileSizeLimit: true,            
+                retainedFileCountLimit: 3, // Canlı ortam çalışma zamanında da 3 gün kuralı geçerli
+                shared: true);
     });
 
     // Configure Controllers with CamelCase naming policy
@@ -57,7 +73,7 @@ try
         c.OperationFilter<Yastık6.Api.Infrastructure.Swagger.ApiKeyHeaderFilter>();
     });
     
-    // [DEĞİŞTİRİLDİ - ÇÖZÜM 5]: Herkese açık CORS ("AllowAll") yerine katı CORS (StrictCors) politikası eklendi.
+    // Herkese açık CORS ("AllowAll") yerine katı CORS (StrictCors) politikası
     builder.Services.AddCors(options =>
     {
         var allowedOrigins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>() ?? Array.Empty<string>();
@@ -69,21 +85,20 @@ try
                       .AllowAnyMethod()
                       .AllowAnyHeader();
             }
-            // Eğer liste boşsa, dışarıdan hiçbir tarayıcı erişimine izin vermez (Flutter mobil uygulaması CORS kurallarına takılmaz, çalışmaya devam eder).
         });
     });
 
-    // [DEĞİŞTİRİLDİ - ÇÖZÜM 3]: Rate Limiter "SlidingWindow" olarak güncellendi.
+    // Rate Limiter "SlidingWindow" ayarları
     builder.Services.AddRateLimiter(options =>
     {
         options.AddPolicy("PublicApi", httpContext =>
-            RateLimitPartition.GetSlidingWindowLimiter( // FixedWindow yerine SlidingWindow kullanıyoruz
+            RateLimitPartition.GetSlidingWindowLimiter(
                 partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
                 factory: partition => new SlidingWindowRateLimiterOptions
                 {
                     Window = TimeSpan.FromMinutes(1),
                     PermitLimit = 60,
-                    SegmentsPerWindow = 3, // 1 dakikayı 3'e böler (20 saniyelik dilimler), yığılmaları (bursting) önler
+                    SegmentsPerWindow = 3,
                     QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
                     QueueLimit = 2
                 }));
@@ -122,44 +137,32 @@ try
 
     // --- MIDDLEWARE PIPELINE (ORDER IS CRITICAL) ---
 
-    // [EKLENDİ - ÇÖZÜM 1]: Gerçek IP adreslerini çözümleyen middleware en başa yerleştirildi.
     app.UseForwardedHeaders();
-
-    // [DEĞİŞTİRİLDİ - ÇÖZÜM 5]: StrictCors politikasını devreye alıyoruz.
     app.UseCors("StrictCors");
-
-    // 2. Global error handling captures exceptions from all subsequent middlewares
     app.UseExceptionHandler();
 
-    // 3. Serilog is now placed BEFORE Response Compression.
     app.UseSerilogRequestLogging(options =>
     {
         options.MessageTemplate = "HTTP {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.0000} ms";
     });
 
-    // 4. Apply Response Compression
     app.UseResponseCompression();
-
     app.UseSwagger();
     app.UseSwaggerUI();
-
-    // 5. Apply Rate Limiting
     app.UseRateLimiter();
 
-    // 6. Mobile Client Verification & Security Middleware
+    // Mobile Client Verification & Security Middleware
     app.Use(async (context, next) =>
     {
-        // [DEĞİŞTİRİLDİ - ÇÖZÜM 4]: Swagger arayüzü koruması
         if (context.Request.Path.StartsWithSegments("/swagger"))
         {
             if (!app.Environment.IsDevelopment())
             {
                 var swaggerKey = app.Configuration["ApiSettings:SwaggerKey"];
                 
-                // Production ortamında URL sonuna ?key=şifre eklenmemişse Swagger arayüzünü saklar
                 if (string.IsNullOrEmpty(swaggerKey) || context.Request.Query["key"] != swaggerKey)
                 {
-                    context.Response.StatusCode = StatusCodes.Status404NotFound; // 401 yerine bilerek 404 dönüyoruz ki tarayıcılar orada bir şey olduğunu anlamasın
+                    context.Response.StatusCode = StatusCodes.Status404NotFound;
                     return;
                 }
             }
@@ -167,7 +170,6 @@ try
             return;
         }
 
-        // Explicitly exempt infrastructure endpoints from the API Key requirement
         if (context.Request.Path.StartsWithSegments("/api/health"))
         {
             await next(context);
@@ -185,10 +187,7 @@ try
         await next(context);
     });
 
-    // Map Health Checks completely outside of the "PublicApi" rate limit policy
     app.MapHealthChecks("/api/health");
-    
-    // Map standard controllers and explicitly attach the rate limit policy to them
     app.MapControllers().RequireRateLimiting("PublicApi");
 
     // --- DATABASE SEEDING PROCESS ---
@@ -214,8 +213,6 @@ try
             }
             
             context.Database.Migrate(); 
-            
-            // Enable WAL mode to prevent database locking issues
             context.Database.ExecuteSqlRaw("PRAGMA journal_mode=WAL;");
             
             await DbSeeder.SeedSymbolsAsync(context, logger);
@@ -240,5 +237,5 @@ catch (Exception ex)
 }
 finally
 {
-    Log.CloseAndFlush();
+    Log.CloseAndFlush(); // Log havuzundaki verilerin diske ve Seq'e tamamen yazıldığından emin olup kapatır
 }
