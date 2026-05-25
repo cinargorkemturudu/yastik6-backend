@@ -167,6 +167,7 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                 
                 await _alertService.SendAlertAsync(
                     $"⚠️ *Provider Crashed: {providerType.Name}*\nTime: `{DateTime.UtcNow:HH:mm:ss} UTC`\nError: `{ex.Message}`", 
+                    $"Snapshot_{providerType.Name}_{ex.GetType().Name}",
                     stoppingToken);
 
                 await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);

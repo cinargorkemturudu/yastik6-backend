@@ -123,6 +123,7 @@ public abstract class YahooFinanceBase : IPriceProvider
                     {
                         _ = alertService.SendAlertAsync(
                             $"🚫 *YAHOO SHADOW BAN*\nModül: `{ProviderName}`\nÇok fazla istek atıldı, IP adresi geçici kısıtlandı!", 
+                            $"YahooShadowBan_{ProviderName}",
                             ct);
                     }
                 }

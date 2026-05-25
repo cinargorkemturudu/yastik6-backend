@@ -6,6 +6,8 @@ using Microsoft.EntityFrameworkCore;
 using Serilog;
 using Serilog.Events;
 using Yastık6.Api.ApplicationConfig;
+using Yastık6.Api.Infrastructure.Alerts;
+using Yastık6.Api.Infrastructure.BackgroundJobs;
 using Yastık6.Api.Infrastructure.Persistence;
 
 // Bootstrap Serilog at the earliest possible stage to ensure robust error logging
@@ -129,6 +131,9 @@ try
 
     // Register Application Services
     builder.Services.AddYastık6Application(builder.Configuration);
+    
+    builder.Services.AddSingleton<AlertTracker>();
+    builder.Services.AddHostedService<DailyReportWorker>();
 
     var app = builder.Build();
 

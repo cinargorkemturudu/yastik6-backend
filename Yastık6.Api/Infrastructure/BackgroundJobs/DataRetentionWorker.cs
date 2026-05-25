@@ -25,9 +25,10 @@ public sealed class DataRetentionWorker(
             {
                 logger.LogError(ex, "An error occurred during the data compression cycle!");
                 
-                // [WATCHDOG] Veritabanı şişme tehlikesi!
+                // [DÜZELTME]: Sekreterin istediği parmak izi (cacheKey) eklendi!
                 await alertService.SendAlertAsync(
                     $"🗑️ *VERİTABANI BAKIM HATASI*\nGeçmiş veriler temizlenemedi/sıkıştırılamadı. DB boyutu kontrolsüz büyüyebilir!\nHata: `{ex.Message}`", 
+                    $"DataRetention_{ex.GetType().Name}", // <- İŞTE EKLENEN SATIR
                     stoppingToken);
             }
 
