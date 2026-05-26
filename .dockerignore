@@ -1,0 +1,29 @@
+# Git ve IDE klasörleri (Devasa önbellekler)
+**/.git
+**/.idea
+**/.vscode
+**/.vs/
+
+# Derleme Çöpleri
+**/bin/
+**/obj/
+**/publish/
+**/TestResults/
+
+# Loglar ve Veritabanı (GİZLİ HAMALLAR BURADAYDI)
+**/logs/
+**/*.db
+**/*.db-wal
+**/*.db-shm
+
+# Hassas Dosyalar
+**/.env
+**/http-client.private.env.json
+**/appsettings.Development.json
+**/*.user
+
+# İşletim Sistemi Çöpleri
+.DS_Store
+
+# Test Projesi
+**/Yastık6.Api.Tests/
