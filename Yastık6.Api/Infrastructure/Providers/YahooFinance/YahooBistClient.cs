@@ -11,7 +11,6 @@ public sealed class YahooBistClient : YahooFinanceBase
 
     public override string ProviderName => "YahooBist";
     
-    // Yahoo delays BIST data by 15 minutes, so frequent updates are unnecessary
     public override TimeSpan RefreshInterval => TimeSpan.FromMinutes(15);
     
     protected override string[] TargetSymbolTypes => new[] { "BIST" };
@@ -20,8 +19,11 @@ public sealed class YahooBistClient : YahooFinanceBase
     {
         var now = DateTime.UtcNow.AddHours(3); // Türkiye Saati
         var isWeekend = now.DayOfWeek == DayOfWeek.Saturday || now.DayOfWeek == DayOfWeek.Sunday;
-        var isMarketHours = now.Hour >= 9 && (now.Hour < 18 || (now.Hour == 18 && now.Minute <= 10));
+        
+        var isNormalTrading = now.Hour >= 9 && now.Hour < 18;
+        
+        var isClosingPriceWindow = now.Hour == 18 && now.Minute >= 11 && now.Minute <= 25;
 
-        return !isWeekend && isMarketHours;
+        return !isWeekend && (isNormalTrading || isClosingPriceWindow);
     }
 }

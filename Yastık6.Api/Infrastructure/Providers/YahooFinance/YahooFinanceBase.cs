@@ -5,7 +5,7 @@ using Yastık6.Api.Application.Common.Interfaces;
 using Yastık6.Api.Application.Features.Prices;
 using Yastık6.Api.Infrastructure.Caching;
 using Yastık6.Api.Infrastructure.Persistence;
-using Yastık6.Api.Infrastructure.Alerts; // [YENİ] Watchdog
+using Yastık6.Api.Infrastructure.Alerts; 
 
 namespace Yastık6.Api.Infrastructure.Providers.YahooFinance;
 
@@ -37,6 +37,9 @@ public abstract class YahooFinanceBase : IPriceProvider
         var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         
         var snapshotStore = scope.ServiceProvider.GetRequiredService<IPriceSnapshotStore>();
+        
+        // [YENİ]: Akıllı defteri scope üzerinden yakalıyoruz.
+        var tracker = scope.ServiceProvider.GetService<AlertTracker>();
 
         var activeSymbols = await dbContext.TrackedSymbols
             .Where(s => s.IsActive && TargetSymbolTypes.Contains(s.SymbolType))
@@ -107,20 +110,34 @@ public abstract class YahooFinanceBase : IPriceProvider
                         if (mappedItem != null)
                         {
                             results.Add(mappedItem);
+                            
+                            // [MÜJDE]: Fiyatı çektik, deftere (varsa) sabıkayı sil diyoruz.
+                            tracker?.MarkAsResolved($"ZeroPrice_{symbolCode}");
                         }
                     }
                 });
+                
+                // [MÜJDE]: Yahoo Chunk başarılı olduysa, olası altyapı çöküş sabıkasını sil.
+                if (tracker?.MarkAsResolved($"SYS_Yahoo_Api_Down") == true)
+                {
+                    _logger.LogInformation("✅ Yahoo API tekrar bağlantı kurdu ve veri çekimi başarılı.");
+                }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Yahoo Finance üzerinden {ProviderName} için veri çekilirken hata oluştu.", ProviderName);
 
-                // [WATCHDOG] Shadow Ban veya Limit Aşımı kontrolü
+                // [VIP ALTYAPI KRİZİ]: Deftere sistemi kanatacak hatayı yaz!
+                tracker?.ShouldSendAlert("SYS_Yahoo_Api_Down");
+
                 if (ex.Message.Contains("429") || ex.Message.Contains("Too Many Requests") || ex.Message.Contains("Forbidden"))
                 {
                     var alertService = scope.ServiceProvider.GetService<IAlertService>();
                     if (alertService != null)
                     {
+                        // [VIP ALTYAPI KRİZİ]: Shadow Ban özel sabıkası
+                        tracker?.ShouldSendAlert("SYS_Yahoo_ShadowBan");
+                        
                         _ = alertService.SendAlertAsync(
                             $"🚫 *YAHOO SHADOW BAN*\nModül: `{ProviderName}`\nÇok fazla istek atıldı, IP adresi geçici kısıtlandı!", 
                             $"YahooShadowBan_{ProviderName}",
