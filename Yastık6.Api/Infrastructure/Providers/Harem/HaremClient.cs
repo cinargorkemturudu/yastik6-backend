@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using Yastık6.Api.Application.Features.Prices;
+using Yastık6.Api.Infrastructure.Alerts; 
 
 namespace Yastık6.Api.Infrastructure.Providers.Harem;
 
@@ -8,6 +9,9 @@ public sealed class HaremClient : IHaremClient
     private readonly HttpClient _client;
     private readonly ILogger<HaremClient> _logger;
     private readonly string _marketPath;
+    
+    // [YENİ]: Akıllı Defter
+    private readonly AlertTracker _tracker;
 
     public string ProviderName => "Harem";
     public bool IsMarketOpen() => true;
@@ -26,15 +30,17 @@ public sealed class HaremClient : IHaremClient
 
             return TimeSpan.FromMinutes(30);
         }
-    }    public TimeSpan MarketCloseTime => TimeSpan.Zero;
+    }    
+    public TimeSpan MarketCloseTime => TimeSpan.Zero;
     
-
-    public HaremClient(HttpClient client, IConfiguration config, ILogger<HaremClient> logger)
+    // [GÜNCELLENDİ]: Constructor'a AlertTracker eklendi
+    public HaremClient(HttpClient client, IConfiguration config, ILogger<HaremClient> logger, AlertTracker tracker)
     {
         _client = client;
         _logger = logger;
         _marketPath = config["Harem:MarketPath"] 
                       ?? throw new InvalidOperationException("Harem:MarketPath konfigürasyonu eksik!");
+        _tracker = tracker;
     }
 
     public async Task<List<LatestPriceResponse>> GetMarketOverviewAsync(CancellationToken ct = default)
@@ -49,6 +55,8 @@ public sealed class HaremClient : IHaremClient
             request.Headers.Add("Pragma", "no-cache");
 
             var response = await _client.SendAsync(request, ct); 
+            
+            // Eğer HTTP hata kodu dönerse (Örn: 401, 500) bunu catch'e düşürür.
             response.EnsureSuccessStatusCode();
 
             var rawResponse = await response.Content.ReadFromJsonAsync<HaremBaseResponseRaw>(cancellationToken: ct);
@@ -56,6 +64,9 @@ public sealed class HaremClient : IHaremClient
             if (rawResponse?.Data is null || rawResponse.Data.Count == 0)
             {
                 _logger.LogWarning("Harem API response data is empty or null.");
+                
+                // [VIP ALTYAPI KRİZİ]: Veri boş geliyorsa bu bir altyapı anomalisidir.
+                _tracker.ShouldSendAlert("SYS_Harem_Empty_Data");
                 return new List<LatestPriceResponse>();
             }
 
@@ -63,7 +74,6 @@ public sealed class HaremClient : IHaremClient
 
             foreach (var item in rawResponse.Data)
             {
-                // [YENİ]: Veriyi dönüştürme işini tamamen Mapper'a devrettik
                 var mappedItem = HaremDataMapper.MapToResponse(item);
                 if (mappedItem != null)
                 {
@@ -71,16 +81,24 @@ public sealed class HaremClient : IHaremClient
                 }
             }
 
+            // [MÜJDE]: Her şey başarıyla bittiğinde, Harem'in tüm altyapı sabıkalarını sil.
+            if (_tracker.MarkAsResolved("SYS_Harem_Api_Down") || _tracker.MarkAsResolved("SYS_Harem_Empty_Data"))
+            {
+                _logger.LogInformation("✅ Harem API bağlantısı tekrar kuruldu ve veri çekimi başarılı.");
+            }
+
             return result;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Harem API verisi çekilirken hata oluştu.");
+            
+            // [VIP ALTYAPI KRİZİ]: Bağlantı koptuğunda deftere yaz!
+            _tracker.ShouldSendAlert("SYS_Harem_Api_Down");
             throw;
         }
     }
     
-
     public sealed class HaremBaseResponseRaw
     {
         [JsonPropertyName("success")] public bool Success { get; set; }

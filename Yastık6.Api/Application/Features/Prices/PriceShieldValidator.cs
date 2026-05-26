@@ -9,11 +9,13 @@ public sealed class PriceShieldValidator
 {
     private readonly ILogger<PriceShieldValidator> _logger;
     private readonly IAlertService _alertService;
+    private readonly AlertTracker _tracker; // [YENİ]: Akıllı Defteri Kalkana Taktık
 
-    public PriceShieldValidator(ILogger<PriceShieldValidator> logger, IAlertService alertService)
+    public PriceShieldValidator(ILogger<PriceShieldValidator> logger, IAlertService alertService, AlertTracker tracker)
     {
         _logger = logger;
         _alertService = alertService;
+        _tracker = tracker;
     }
 
     public async Task<bool> ValidatePriceAsync(
@@ -24,14 +26,19 @@ public sealed class PriceShieldValidator
         // --- SHIELD 1: SIFIR VEYA NEGATİF FİYAT KALKANI ---
         if (newPrice.Ask <= 0 || newPrice.Bid <= 0)
         {
-            _logger.LogWarning("[SHIELD REJECT] {Code} sıfır/negatif fiyat döndürdü! Kaynak: {Source}, Fiyat: {Price}", 
-                newPrice.ProductCode, newPrice.Source, newPrice.Ask);
+            var cacheKey = $"ZeroPrice_{newPrice.ProductCode}";
             
-            // [DÜZELTİLDİ]: Sekretere "Hangi ürünün sıfır fiyatı" olduğunu parmak izi olarak verdik!
-            await _alertService.SendAlertAsync(
-                $"⚠️ *ZERO PRICE REJECTED*\nSymbol: `{newPrice.ProductCode}`\nSource: `{newPrice.Source}`\nPrice: `{newPrice.Ask}`\n_Sistem mevcut geçerli fiyatı korudu._", 
-                $"ZeroPrice_{newPrice.ProductCode}", // <- EKLENEN PARMAK İZİ (Örn: ZeroPrice_GLD)
-                ct);
+            // [ZEKA EKLENDİ]: Deftere soruyoruz, "Bunu 1 saat içinde hiç raporladık mı?"
+            if (_tracker.ShouldSendAlert(cacheKey))
+            {
+                _logger.LogWarning("[SHIELD REJECT] {Code} sıfır/negatif fiyat döndürdü! Kaynak: {Source}, Fiyat: {Price}", 
+                    newPrice.ProductCode, newPrice.Source, newPrice.Ask);
+                
+                await _alertService.SendAlertAsync(
+                    $"⚠️ *ZERO PRICE REJECTED*\nSymbol: `{newPrice.ProductCode}`\nSource: `{newPrice.Source}`\nPrice: `{newPrice.Ask}`\n_Sistem mevcut geçerli fiyatı korudu._", 
+                    cacheKey, 
+                    ct);
+            }
             
             return false; 
         }
@@ -43,14 +50,19 @@ public sealed class PriceShieldValidator
             
             if (instantChange > 40m)
             {
-                _logger.LogCritical("[SHIELD FLASH CRASH] {Code} için anormal sapma detected! Eski: {Old}, Yeni: {New}, Sapma: %{Rate}", 
-                    newPrice.ProductCode, existingPrice.Ask, newPrice.Ask, instantChange);
+                var cacheKey = $"FlashCrash_{newPrice.ProductCode}";
                 
-                // [DÜZELTİLDİ]: Sekretere "Hangi ürünün çöküşü" olduğunu parmak izi olarak verdik!
-                await _alertService.SendAlertAsync(
-                    $"🚨 *FLASH CRASH DETECTED*\nSymbol: `{newPrice.ProductCode}`\nOld: `{existingPrice.Ask}`\nNew: `{newPrice.Ask}`\nDeviation: `%{instantChange:N2}`\nSource: `{newPrice.Source}`", 
-                    $"FlashCrash_{newPrice.ProductCode}", // <- EKLENEN PARMAK İZİ (Örn: FlashCrash_BTC)
-                    ct);
+                // [ZEKA EKLENDİ]: Çöküş raporunu da 1 saatlik susturucuya bağladık
+                if (_tracker.ShouldSendAlert(cacheKey))
+                {
+                    _logger.LogCritical("[SHIELD FLASH CRASH] {Code} için anormal sapma detected! Eski: {Old}, Yeni: {New}, Sapma: %{Rate}", 
+                        newPrice.ProductCode, existingPrice.Ask, newPrice.Ask, instantChange);
+                    
+                    await _alertService.SendAlertAsync(
+                        $"🚨 *FLASH CRASH DETECTED*\nSymbol: `{newPrice.ProductCode}`\nOld: `{existingPrice.Ask}`\nNew: `{newPrice.Ask}`\nDeviation: `%{instantChange:N2}`\nSource: `{newPrice.Source}`", 
+                        cacheKey, 
+                        ct);
+                }
                 
                 return false; 
             }

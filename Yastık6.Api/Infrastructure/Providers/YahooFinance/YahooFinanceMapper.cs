@@ -59,8 +59,21 @@ public static class YahooFinanceMapper
         decimal marketPrice = (decimal)security.RegularMarketPrice;
         if (marketPrice == 0) return null;
 
-        decimal askPrice = security.Fields.ContainsKey("Ask") ? (decimal)security.Ask : marketPrice;
-        decimal bidPrice = security.Fields.ContainsKey("Bid") ? (decimal)security.Bid : marketPrice;
+        // [DÜZELTİLDİ]: Sığ hisseler (örn: ISATR) veya karanlık oda için Ask/Bid zekalandırması.
+        // Eğer Ask alanı yoksa VEYA Ask alanı var ama içi 0 ise, market fiyatını kullan!
+        decimal askPrice = marketPrice;
+        if (security.Fields.ContainsKey("Ask") && security.Fields["Ask"] != null)
+        {
+            var rawAsk = Convert.ToDecimal(security.Fields["Ask"]);
+            if (rawAsk > 0) askPrice = rawAsk;
+        }
+
+        decimal bidPrice = marketPrice;
+        if (security.Fields.ContainsKey("Bid") && security.Fields["Bid"] != null)
+        {
+            var rawBid = Convert.ToDecimal(security.Fields["Bid"]);
+            if (rawBid > 0) bidPrice = rawBid;
+        }
 
         string finalType;
 

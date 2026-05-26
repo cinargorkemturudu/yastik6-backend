@@ -42,14 +42,12 @@ public sealed class TelegramCommandListener : BackgroundService
 
         _logger.LogInformation("📻 Telsiz Operatörü (Command Listener) frekansı dinlemeye başladı.");
         
-        // Telegram'a "Bana sadece şu ID'den sonraki mesajları ver" demek için offset tutuyoruz.
         long offset = 0;
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                // timeout=30 ile Long Polling yapıyoruz. Sunucu 30 sn boyunca mesaj gelmesini bekler, yorulmaz.
                 var url = $"https://api.telegram.org/bot{_botToken}/getUpdates?offset={offset}&timeout=30";
                 
                 var response = await _httpClient.GetAsync(url, stoppingToken);
@@ -69,11 +67,9 @@ public sealed class TelegramCommandListener : BackgroundService
                     {
                         if (update.TryGetProperty("update_id", out var updateIdElement))
                         {
-                            // Bir sonraki döngüde aynı mesajları tekrar okumamak için offset'i 1 ileri kaydırıyoruz.
                             offset = updateIdElement.GetInt64() + 1;
                         }
 
-                        // Mesajı, kimin attığını (chat_id) ve metnini güvenli şekilde ayıklıyoruz.
                         if (update.TryGetProperty("message", out var message) &&
                             message.TryGetProperty("chat", out var chat) &&
                             chat.TryGetProperty("id", out var chatIdElement) &&
@@ -82,7 +78,6 @@ public sealed class TelegramCommandListener : BackgroundService
                             var chatId = chatIdElement.GetInt64().ToString();
                             var text = textElement.GetString();
 
-                            // SINIR GÜVENLİĞİ: Gelen ID, bizim appsettings'te patron diye kaydettiğimiz ID mi?
                             if (chatId == _expectedChatId && text?.Trim().ToLower() == "/rapor")
                             {
                                 _logger.LogInformation("Patrondan /rapor komutu alındı. Anlık durum iletiliyor...");
@@ -90,7 +85,6 @@ public sealed class TelegramCommandListener : BackgroundService
                             }
                             else if (chatId != _expectedChatId)
                             {
-                                // Yabancı biri bota yazarsa asla cevap verme, sadece logla.
                                 _logger.LogWarning("🚨 Tanımlanmayan bir kaynaktan bota mesaj geldi! ChatId: {ChatId}, Metin: {Text}", chatId, text);
                             }
                         }
@@ -111,26 +105,65 @@ public sealed class TelegramCommandListener : BackgroundService
 
     private async Task SendSnapshotReportAsync(CancellationToken ct)
     {
-        // Defteri SIFIRLAMADAN sadece o anki fotoğrafını çekiyoruz
-        var snapshot = _tracker.GetCurrentSnapshot();
+        // [DÜZELTİLDİ]: Tuple parçalaması
+        var (active, resolved) = _tracker.GetCurrentSnapshot();
 
         var reportBuilder = new StringBuilder();
-        reportBuilder.AppendLine("📡 *Yastık6 Telsiz - Anlık Durum Raporu*");
-        
-        if (snapshot.Count > 0)
+        reportBuilder.AppendLine("📡 *Yastık6 Telsiz - Kapsamlı Durum Raporu*\n");
+
+        // [VIP LOCASI]: Altyapı Hataları (SYS_ veya CRITICAL_ ile başlayanlar)
+        var sysErrors = active.Where(x => x.Key.StartsWith("SYS_") || x.Key.StartsWith("CRITICAL_")).ToList();
+        var dataErrors = active.Where(x => !x.Key.StartsWith("SYS_") && !x.Key.StartsWith("CRITICAL_")).ToList();
+
+        if (sysErrors.Any())
         {
-            reportBuilder.AppendLine("Şu ana kadar susturulan anormallikler:\n");
-            foreach (var item in snapshot.OrderByDescending(x => x.Value))
+            reportBuilder.AppendLine("🚨 *ALTYAPI VE SAĞLIK DURUMU (KRİTİK):*");
+            foreach (var item in sysErrors.OrderByDescending(x => x.Value))
             {
-                reportBuilder.AppendLine($"- `{item.Key}` : {item.Value} kez engellendi.");
+                reportBuilder.AppendLine($"- `{item.Key}` : {item.Value} kez uyarı verdi!");
             }
-            reportBuilder.AppendLine("\n_Sistem aktif olarak izleniyor._");
+            reportBuilder.AppendLine();
         }
         else
         {
-            reportBuilder.AppendLine("\nŞu ana kadar raporlanacak bir vukuat gerçekleşmedi.\n_Her şey yolunda patron._");
+            reportBuilder.AppendLine("✅ *Altyapı:* Tüm motorlar %100 sağlıklı çalışıyor.\n");
         }
 
-        // Telsiz cevabının susturulmaması için cacheKey (parmak izi) kısmını null geçiyoruz.
-        await _alertService.SendAlertAsync(reportBuilder.ToString(), string.Empty, ct);    }
+        // AKTİF VERİ KRİZLERİ
+        if (dataErrors.Any())
+        {
+            reportBuilder.AppendLine($"🔥 *Devam Eden Veri Krizleri:* Toplam {dataErrors.Count} asset hata veriyor.");
+            foreach (var item in dataErrors.OrderByDescending(x => x.Value).Take(40)) // Take(40) Sınırı
+            {
+                reportBuilder.AppendLine($"- `{item.Key}` : {item.Value} kez patladı.");
+            }
+            
+            if (dataErrors.Count > 40) reportBuilder.AppendLine($"_...ve listelenmeyen {dataErrors.Count - 40} asset daha._");
+            reportBuilder.AppendLine();
+        }
+
+        // KENDİ KENDİNE DÜZELENLER
+        if (resolved.Count > 0)
+        {
+            reportBuilder.AppendLine($"⚕️ *Kendi Kendine Düzelenler:* Toplam {resolved.Count} asset normale döndü.");
+            foreach (var item in resolved.OrderByDescending(x => x.Value).Take(40))
+            {
+                reportBuilder.AppendLine($"- `{item.Key}` : {item.Value} hatadan sonra düzeldi.");
+            }
+            
+            if (resolved.Count > 40) reportBuilder.AppendLine($"_...ve listelenmeyen {resolved.Count - 40} asset daha._");
+            reportBuilder.AppendLine();
+        }
+
+        if (active.Count == 0 && resolved.Count == 0)
+        {
+            reportBuilder.AppendLine("Şu ana kadar raporlanacak bir vukuat gerçekleşmedi.\n_Sistem kusursuz._");
+        }
+        else
+        {
+            reportBuilder.AppendLine("_Sistem aktif olarak izleniyor._");
+        }
+
+        await _alertService.SendAlertAsync(reportBuilder.ToString(), string.Empty, ct);
+    }
 }
