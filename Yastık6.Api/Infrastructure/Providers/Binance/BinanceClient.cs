@@ -16,7 +16,7 @@ public sealed class BinanceClient : IBinanceClient
 
     public bool IsMarketOpen() => true;
 
-    public TimeSpan RefreshInterval => TimeSpan.FromSeconds(3);
+    public TimeSpan RefreshInterval => TimeSpan.FromSeconds(30);
     
     public TimeSpan MarketCloseTime => TimeSpan.Zero;
 

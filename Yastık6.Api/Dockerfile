@@ -31,8 +31,10 @@ EXPOSE 8080
 ENV ASPNETCORE_URLS=http://+:8080
 ENV ASPNETCORE_ENVIRONMENT=Production
 
-# SQLite dosyasının doğru klasöre yazılması için ConnectionString'i eziyoruz
-ENV ConnectionStrings__DefaultConnection="Data Source=/app/data/yastik.db"
+# [ZIRH GİYİLDİ]: SQLite WAL Modu ve 5 saniyelik kilitlenme toleransı eklendi.
+# Hem standart yapıyı hem de senin appsettings.json'daki özel yapıyı garantiye alıyoruz:
+ENV ConnectionStrings__DefaultConnection="Data Source=/app/data/yastik.db;Cache=Shared;Mode=ReadWriteCreate;Journal Mode=WAL;Pooling=True;Busy Timeout=5000"
+ENV Database__ConnectionString="Data Source=/app/data/yastik.db;Cache=Shared;Mode=ReadWriteCreate;Journal Mode=WAL;Pooling=True;Busy Timeout=5000"
 
 # Uygulamayı başlat
 ENTRYPOINT ["dotnet", "Yastık6.Api.dll"]
