@@ -157,6 +157,47 @@ try
     app.UseSwaggerUI();
     app.UseRateLimiter();
 
+    // --- İHANET ALARMI (SECURITY SHIELD) MIDDLEWARE ---
+    // Eğer tanımlanmayan (beklenmeyen) bir rotaya istek gelir ve sistem yanlışlıkla 
+    // başarılı (200-299) dönerse, anında Telegram'a "Sızıntı Şüphesi" alarmı gönderir.
+    app.Use(async (context, next) =>
+    {
+        var path = context.Request.Path.Value?.ToLowerInvariant() ?? "";
+
+        // İsteği normal akışa (bir sonraki katmana) bırakıyoruz
+        await next(context);
+
+        var statusCode = context.Response.StatusCode;
+
+        // Senin sisteminde yasal olarak var olan ve beklediğin rotalar
+        bool isExpectedRoute = path.StartsWith("/api/") || 
+                               path.StartsWith("/swagger") || 
+                               path.StartsWith("/health") || 
+                               path == "/";
+
+        // Beklenmeyen rotadan BAŞARILI yanıt döndüyse çanları çal!
+        if (!isExpectedRoute && statusCode >= 200 && statusCode < 300)
+        {
+            var alertService = context.RequestServices.GetRequiredService<IAlertService>();
+            var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+
+            logger.LogCritical("🚨 GÜVENLİK İHLALİ! Tanımlanmayan bir rotaya erişim sağlandı: {Path}", path);
+
+            var alertMessage = $"""
+                               🚨 *KRİTİK GÜVENLİK İHLALİ (Sızıntı Şüphesi)* 🚨
+                               Tanımlanmayan bir adrese yapılan istek başarıyla sonuçlandı!
+                               
+                               *Hedef:* `{path}`
+                               *IP Adresi:* `{context.Connection.RemoteIpAddress}`
+                               *Dönen Kod:* `{statusCode}`
+                               
+                               _Sistemden yanlışlıkla veri veya dosya sızdırılmış olabilir! Acil müdahale gerekiyor._
+                               """;
+
+            await alertService.SendAlertAsync(alertMessage, null, context.RequestAborted);
+        }
+    });
+
     // Mobile Client Verification & Security Middleware
     app.Use(async (context, next) =>
     {

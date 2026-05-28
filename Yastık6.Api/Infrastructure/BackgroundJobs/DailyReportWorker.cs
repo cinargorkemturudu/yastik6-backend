@@ -34,28 +34,34 @@ public sealed class DailyReportWorker : BackgroundService
                 var now = DateTime.Now;
                 var nextRun = now.Date.AddDays(1).AddMinutes(-5); 
                 
-                if (now > nextRun)
+                // [BUG FIX]: Eşitlik durumu (>=) eklendi
+                if (now >= nextRun)
                 {
                     nextRun = nextRun.AddDays(1); 
                 }
 
                 var delay = nextRun - now;
+
+                // [BUG FIX]: Kuantum döngüsünü (milisaniye spamını) önlemek için güvenlik sigortası
+                if (delay.TotalSeconds < 1)
+                {
+                    delay = TimeSpan.FromSeconds(1);
+                }
+
                 _logger.LogInformation("Gece Bekçisi uykuya dalıyor. Uyanış zamanı: {NextRun}", nextRun.ToString("HH:mm"));
                 
                 await Task.Delay(delay, stoppingToken);
 
-                // [DÜZELTİLDİ]: Artık defter bize iki ayrı liste dönüyor (Tuple)
                 var (active, resolved) = _tracker.GetAndClearDailySummary();
+                
+                var reportBuilder = new StringBuilder();
+                reportBuilder.AppendLine("📊 *Yastık6 Gün Sonu Asayiş Raporu*\n");
 
                 if (active.Count > 0 || resolved.Count > 0)
                 {
-                    var reportBuilder = new StringBuilder();
-                    reportBuilder.AppendLine("📊 *Yastık6 Gün Sonu Asayiş Raporu*\n");
-
                     if (active.Count > 0)
                     {
                         reportBuilder.AppendLine("🔥 *Gün Sonu Devam Eden Krizler:*");
-                        // Limit 40 olarak eklendi
                         foreach (var item in active.OrderByDescending(x => x.Value).Take(40))
                         {
                             reportBuilder.AppendLine($"- `{item.Key}` : {item.Value} kez patladı.");
@@ -74,16 +80,17 @@ public sealed class DailyReportWorker : BackgroundService
                         if (resolved.Count > 40) reportBuilder.AppendLine($"_...ve {resolved.Count - 40} asset daha._");
                         reportBuilder.AppendLine();
                     }
-
-                    reportBuilder.AppendLine("_Sistem stabil. Kayıt defteri yarına hazır. İyi geceler._");
-
-                    await _alertService.SendAlertAsync(reportBuilder.ToString(), null, stoppingToken);
-                    _logger.LogInformation("Gün sonu vukuat raporu Telegram'a başarıyla iletildi.");
                 }
                 else
                 {
-                    _logger.LogInformation("Bugün raporlanacak hiçbir vukuat olmadı. Sistem kusursuz çalıştı.");
+                    // [YENİ]: Artık defter boş olsa bile sessiz kalmayacak, Telegram'a rapor geçecek.
+                    reportBuilder.AppendLine("✅ *Bugün raporlanacak hiçbir vukuat olmadı.*\n");
                 }
+
+                reportBuilder.AppendLine("_Sistem stabil. Kayıt defteri yarına hazır. İyi geceler patron._");
+
+                await _alertService.SendAlertAsync(reportBuilder.ToString(), null, stoppingToken);
+                _logger.LogInformation("Gün sonu vukuat raporu Telegram'a başarıyla iletildi.");
             }
             catch (TaskCanceledException)
             {
