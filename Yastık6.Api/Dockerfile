@@ -33,8 +33,8 @@ ENV ASPNETCORE_ENVIRONMENT=Production
 
 # [ZIRH GİYİLDİ]: SQLite WAL Modu ve 5 saniyelik kilitlenme toleransı eklendi.
 # Hem standart yapıyı hem de senin appsettings.json'daki özel yapıyı garantiye alıyoruz:
-ENV ConnectionStrings__DefaultConnection="Data Source=/app/data/yastik.db;Cache=Shared;Mode=ReadWriteCreate;Journal Mode=WAL;Pooling=True;Busy Timeout=5000"
-ENV Database__ConnectionString="Data Source=/app/data/yastik.db;Cache=Shared;Mode=ReadWriteCreate;Journal Mode=WAL;Pooling=True;Busy Timeout=5000"
+ENV ConnectionStrings__DefaultConnection="Data Source=/app/data/yastik.db;Cache=Shared;Pooling=True;"
+ENV Database__ConnectionString="Data Source=/app/data/yastik.db;Cache=Shared;Pooling=True;"
 
 # Uygulamayı başlat
 ENTRYPOINT ["dotnet", "Yastık6.Api.dll"]
