@@ -62,20 +62,30 @@ public static class DependencyInjection
         services.AddHttpClient<IHaremClient, HaremClient>(client =>
             {
                 client.BaseAddress = new Uri(haremBaseUrl);
-                client.DefaultRequestHeaders.TryAddWithoutValidation("x-rapidapi-host", host);
-                client.DefaultRequestHeaders.TryAddWithoutValidation("x-rapidapi-key", apiKey);
+            
+                // 1. RapidAPI başlıkları (API Gateway'in beklediği birebir Pascal-Kebab formatı)
+                client.DefaultRequestHeaders.TryAddWithoutValidation("X-RapidAPI-Host", host);
+                client.DefaultRequestHeaders.TryAddWithoutValidation("X-RapidAPI-Key", apiKey);
+            
+                // 2. cURL isteği ile birebir tutarlılık sağlamak için JSON başlıkları
+                client.DefaultRequestHeaders.TryAddWithoutValidation("Content-Type", "application/json");
+                client.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "application/json");
+
+                // 3. WAF / Cloudflare bot kalkanını aşmak için Sentetik Tarayıcı Kimliği (User-Agent)
+                client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+            
                 client.Timeout = TimeSpan.FromSeconds(30);
             })
-        .AddTransientHttpErrorPolicy(policyBuilder => 
-            policyBuilder.WaitAndRetryAsync(
-                retryCount: 3, 
-                sleepDurationProvider: attempt => 
-                {
-                    var baseDelay = TimeSpan.FromSeconds(Math.Pow(2, attempt)); 
-                    var jitter = TimeSpan.FromMilliseconds(Random.Shared.Next(0, 1000)); 
-                    return baseDelay + jitter; 
-                }
-            ));
+            .AddTransientHttpErrorPolicy(policyBuilder => 
+                policyBuilder.WaitAndRetryAsync(
+                    retryCount: 3, 
+                    sleepDurationProvider: attempt => 
+                    {
+                        var baseDelay = TimeSpan.FromSeconds(Math.Pow(2, attempt)); 
+                        var jitter = TimeSpan.FromMilliseconds(Random.Shared.Next(0, 1000)); 
+                        return baseDelay + jitter; 
+                    }
+                ));
 
         services.AddTransient<IPriceProvider>(sp => sp.GetRequiredService<IHaremClient>());
         
