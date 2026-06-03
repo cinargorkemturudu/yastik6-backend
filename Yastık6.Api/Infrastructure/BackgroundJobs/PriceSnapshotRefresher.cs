@@ -47,7 +47,7 @@ public sealed class PriceSnapshotRefresher : BackgroundService
             _logger.LogInformation("Price refresh service started. Discovered providers: {Count}", providerTypes.Count);
         }
 
-        // Her fiyat sağlayıcısı (Binance, Yahoo, Harem) için bağımsız birer döngü (Task) başlat
+        // Her fiyat sağlayıcısı (Binance, Yahoo, Harem vb.) için bağımsız birer döngü (Task) başlat
         var providerTasks = providerTypes.Select(type => RunProviderLoopAsync(type, stoppingToken));
 
         return Task.WhenAll(providerTasks);
@@ -165,10 +165,105 @@ public sealed class PriceSnapshotRefresher : BackgroundService
             {
                 _logger.LogError(ex, "A critical error occurred while fetching prices for provider {ProviderType}.", providerType.Name);
                 
-                await _alertService.SendAlertAsync(
-                    $"⚠️ *Provider Crashed: {providerType.Name}*\nTime: `{DateTime.UtcNow:HH:mm:ss} UTC`\nError: `{ex.Message}`", 
-                    $"Snapshot_{providerType.Name}_{ex.GetType().Name}",
-                    stoppingToken);
+                // --- KESİN FALLBACK (YEDEKLEME) VE LOGLAMA SENARYOSU ---
+                // Sıkıntı çıkaran bağımlılıkları (namespace) önlemek için sınıf ismini doğrudan kontrol ediyoruz
+                if (providerType.Name == "FreeCurrencyClient")
+                {
+                    _logger.LogWarning("FreeCurrency failed! Triggering immediate fallback to YahooForexClient...");
+                    
+                    await _alertService.SendAlertAsync(
+                        $"🔄 *Fallback Activated*\n`FreeCurrency` crashed. Routing Forex traffic to `YahooForexClient`.\nError: `{ex.Message}`", 
+                        "Fallback_FreeCurrency_Yahoo",
+                        stoppingToken);
+
+                    try
+                    {
+                        using var fallbackScope = _scopeFactory.CreateScope();
+                        
+                        // Yedek sağlayıcıyı isim üzerinden güvenle buluyoruz
+                        var fallbackProvider = fallbackScope.ServiceProvider.GetServices<IPriceProvider>()
+                            .FirstOrDefault(p => p.GetType().Name == "YahooForexClient");
+
+                        if (fallbackProvider != null)
+                        {
+                            var clock = fallbackScope.ServiceProvider.GetRequiredService<ISystemClock>();
+                            var repository = fallbackScope.ServiceProvider.GetRequiredService<IPriceHistoryRepository>();
+
+                            var fallbackRawPrices = await fallbackProvider.GetMarketOverviewAsync(stoppingToken);
+                            
+                            if (fallbackRawPrices.Count > 0)
+                            {
+                                var verifiedPrices = await _priceProcessor.ProcessPricesAsync(fallbackRawPrices, fallbackProvider.ProviderName, stoppingToken);
+
+                                if (verifiedPrices.Count > 0)
+                                {
+                                    var recordsToInsert = new List<PriceRecord>();
+
+                                    lock (CacheLock)
+                                    {
+                                        var currentSnapshot = _snapshotStore.Current;
+                                        var currentDict = currentSnapshot?.Items.ToDictionary(p => p.ProductCode)
+                                                           ?? new Dictionary<string, LatestPriceResponse>();
+
+                                        foreach (var newPrice in verifiedPrices)
+                                        {
+                                            bool hasPriceChanged = true;
+
+                                            if (currentDict.TryGetValue(newPrice.ProductCode, out var existingPrice))
+                                            {
+                                                if (existingPrice.Ask == newPrice.Ask && existingPrice.Bid == newPrice.Bid)
+                                                {
+                                                    hasPriceChanged = false; 
+                                                }
+                                            }
+
+                                            if (hasPriceChanged)
+                                            {
+                                                recordsToInsert.Add(new PriceRecord
+                                                {
+                                                    Id = Guid.NewGuid(),
+                                                    ProductCode = newPrice.ProductCode,
+                                                    Source = newPrice.Source,
+                                                    AskPrice = newPrice.Ask,
+                                                    BidPrice = newPrice.Bid,
+                                                    LastPrice = newPrice.LastPrice,
+                                                    TimestampUtc = clock.UtcNow
+                                                });
+                                            }
+
+                                            currentDict[newPrice.ProductCode] = newPrice;
+                                        }
+
+                                        _snapshotStore.Set(new LatestPricesResponse(
+                                            Items: currentDict.Values.ToList(), 
+                                            ComputedAtUtc: DateTimeOffset.UtcNow
+                                        ));
+                                    }
+
+                                    if (recordsToInsert.Count > 0)
+                                    {
+                                        await repository.AddPriceRecordsAsync(recordsToInsert, stoppingToken);
+                                    }
+                                    
+                                    _logger.LogInformation("Fallback to YahooForexClient completed successfully and data saved.");
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception fallbackEx)
+                    {
+                        _logger.LogCritical(fallbackEx, "Fatal: Fallback provider YahooForex also failed!");
+                        await _alertService.SendAlertAsync($"🚨 *DOUBLE CRASH*\nBoth `FreeCurrency` and fallback `YahooForex` failed!", "DoubleCrash_Forex", stoppingToken);
+                    }
+                }
+                else
+                {
+                    // Diğer sağlayıcılar (Binance, Harem vb.) için standart alarm
+                    await _alertService.SendAlertAsync(
+                        $"⚠️ *Provider Crashed: {providerType.Name}*\nTime: `{DateTime.UtcNow:HH:mm:ss} UTC`\nError: `{ex.Message}`", 
+                        $"Snapshot_{providerType.Name}_{ex.GetType().Name}",
+                        stoppingToken);
+                }
 
                 await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
             }
