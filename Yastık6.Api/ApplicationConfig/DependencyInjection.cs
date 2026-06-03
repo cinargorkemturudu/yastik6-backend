@@ -36,7 +36,6 @@ public static class DependencyInjection
 
         services.AddSingleton<IPriceSnapshotStore, PriceSnapshotStore>();
         
-        // [YENİ EKLENDİ]: Clean Architecture İş Hattı (Pipeline) Kayıtları
         services.AddSingleton<PriceShieldValidator>();
         services.AddSingleton<IPriceProcessor, PriceProcessor>();
 
@@ -45,12 +44,10 @@ public static class DependencyInjection
         // --- WATCHDOG (TELEGRAM ALARM) CONFIGURATION ---
         services.AddHttpClient<IAlertService, TelegramAlertService>(client =>
         {
-            // Bekçinin ana döngüleri (Binance/Harem) kilitlememesi için süreyi kısa tutuyoruz
             client.Timeout = TimeSpan.FromSeconds(5);
         });
 
         // --- HAREM CLIENT CONFIGURATION ---
-        // ASCII Temizliği: HTTP Header Injection saldırılarına karşı koruma
         var haremBaseUrlRaw = configuration["Harem:BaseUrl"] ?? throw new InvalidOperationException("Harem:BaseUrl is missing.");
         var hostRaw = configuration["Harem:Host"] ?? throw new InvalidOperationException("Harem:Host missing.");
         var apiKeyRaw = configuration["Harem:ApiKey"] ?? throw new InvalidOperationException("Harem:ApiKey missing.");
@@ -63,15 +60,15 @@ public static class DependencyInjection
             {
                 client.BaseAddress = new Uri(haremBaseUrl);
             
-                // 1. RapidAPI başlıkları (API Gateway'in beklediği birebir Pascal-Kebab formatı)
+                // 1. RapidAPI başlıkları
                 client.DefaultRequestHeaders.TryAddWithoutValidation("X-RapidAPI-Host", host);
                 client.DefaultRequestHeaders.TryAddWithoutValidation("X-RapidAPI-Key", apiKey);
             
-                // 2. cURL isteği ile birebir tutarlılık sağlamak için JSON başlıkları
+                // 2. cURL isteği ile birebir tutarlılık
                 client.DefaultRequestHeaders.TryAddWithoutValidation("Content-Type", "application/json");
                 client.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "application/json");
 
-                // 3. WAF / Cloudflare bot kalkanını aşmak için Sentetik Tarayıcı Kimliği (User-Agent)
+                // 3. WAF / Cloudflare bot kalkanını aşmak için Tarayıcı Kimliği
                 client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
             
                 client.Timeout = TimeSpan.FromSeconds(30);
@@ -89,7 +86,7 @@ public static class DependencyInjection
 
         services.AddTransient<IPriceProvider>(sp => sp.GetRequiredService<IHaremClient>());
         
-        // --- BINANCE CLIENT CONFIGURATION ---I'm
+        // --- BINANCE CLIENT CONFIGURATION ---
         services.AddHttpClient<IBinanceClient, BinanceClient>(client =>
         {
             client.BaseAddress = new Uri("https://api.binance.com");
@@ -111,10 +108,16 @@ public static class DependencyInjection
         // --- FREE CURRENCY CLIENT CONFIGURATION ---
         var fcBaseUrlRaw = configuration["FreeCurrency:BaseUrl"] ?? "https://api.freecurrencyapi.com";
         var fcBaseUrl = new string(fcBaseUrlRaw.Where(c => c >= 32 && c <= 126).ToArray());
+        var fcApiKeyRaw = configuration["FreeCurrency:ApiKey"] ?? throw new InvalidOperationException("FreeCurrency:ApiKey is missing.");
+        var fcApiKey = new string(fcApiKeyRaw.Where(c => c >= 32 && c <= 126).ToArray());
 
         services.AddHttpClient<IFreeCurrencyClient, FreeCurrencyClient>(client =>
         {
             client.BaseAddress = new Uri(fcBaseUrl);
+            
+            // [YENİ]: Limit veya 401 hatalarını engellemek için gerekli anahtar enjeksiyonu
+            client.DefaultRequestHeaders.TryAddWithoutValidation("apikey", fcApiKey);
+            
             client.Timeout = TimeSpan.FromSeconds(15);
         })
         .AddTransientHttpErrorPolicy(policyBuilder =>
