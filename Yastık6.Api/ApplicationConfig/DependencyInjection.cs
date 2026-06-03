@@ -25,7 +25,6 @@ public static class DependencyInjection
     {
         services.AddMemoryCache();
         
-        // [YENİ]: Saat Motoru ve Akıllı Defter sisteme tanıtıldı
         services.AddSingleton<ISystemClock, SystemClock>();
         services.AddSingleton<AlertTracker>(); 
 
@@ -58,57 +57,59 @@ public static class DependencyInjection
         var host = new string(hostRaw.Where(c => c >= 32 && c <= 126).ToArray());
         var apiKey = new string(apiKeyRaw.Where(c => c >= 32 && c <= 126).ToArray());
 
-        // [DÜZELTİLDİ]: IHaremClient silindi, doğrudan HaremClient olarak kaydediliyor.
         services.AddHttpClient<HaremClient>(client =>
             {
                 client.BaseAddress = new Uri(haremBaseUrl);
-            
-                // 1. RapidAPI başlıkları
                 client.DefaultRequestHeaders.TryAddWithoutValidation("X-RapidAPI-Host", host);
                 client.DefaultRequestHeaders.TryAddWithoutValidation("X-RapidAPI-Key", apiKey);
-            
-                // 2. cURL isteği ile birebir tutarlılık
                 client.DefaultRequestHeaders.TryAddWithoutValidation("Content-Type", "application/json");
                 client.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "application/json");
-
-                // 3. WAF / Cloudflare bot kalkanını aşmak için Tarayıcı Kimliği
                 client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-            
                 client.Timeout = TimeSpan.FromSeconds(30);
             })
-            .AddTransientHttpErrorPolicy(policyBuilder => 
-                policyBuilder.WaitAndRetryAsync(
-                    retryCount: 3, 
-                    sleepDurationProvider: attempt => 
-                    {
-                        var baseDelay = TimeSpan.FromSeconds(Math.Pow(2, attempt)); 
-                        var jitter = TimeSpan.FromMilliseconds(Random.Shared.Next(0, 1000)); 
-                        return baseDelay + jitter; 
-                    }
-                ));
+            // [KRİTİK DÜZELTME]: AddPolicyHandler kullanılarak ILogger içeri sızdırıldı ve log şablonu düzeltildi.
+            .AddPolicyHandler((sp, request) =>
+            {
+                var logger = sp.GetRequiredService<ILogger<HaremClient>>();
+                return HttpPolicyExtensions
+                    .HandleTransientHttpError()
+                    .WaitAndRetryAsync(
+                        retryCount: 3, 
+                        sleepDurationProvider: attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)) + TimeSpan.FromMilliseconds(Random.Shared.Next(0, 1000)),
+                        onRetry: (outcome, timespan, retryAttempt, context) =>
+                        {
+                            logger.LogWarning("Harem API geçici hata verdi ({ErrorMessage}). {DelaySeconds:F1} sn sonra tekrar deneniyor (Deneme: {RetryCount}).",
+                                outcome.Exception?.Message ?? $"HTTP {(int?)outcome.Result?.StatusCode}",
+                                timespan.TotalSeconds,
+                                retryAttempt);
+                        });
+            });
 
-        // [DÜZELTİLDİ]: HaremClient, genel IPriceProvider havuzuna ekleniyor.
         services.AddTransient<IPriceProvider>(sp => sp.GetRequiredService<HaremClient>());
         
         // --- BINANCE CLIENT CONFIGURATION ---
-        // [DÜZELTİLDİ]: IBinanceClient silindi, doğrudan BinanceClient olarak kaydediliyor.
         services.AddHttpClient<BinanceClient>(client =>
         {
             client.BaseAddress = new Uri("https://api.binance.com");
             client.Timeout = TimeSpan.FromSeconds(10);
         })
-        .AddTransientHttpErrorPolicy(policyBuilder =>
-            policyBuilder.WaitAndRetryAsync(
-                retryCount: 3, 
-                sleepDurationProvider: attempt => 
-                {
-                    var baseDelay = TimeSpan.FromSeconds(Math.Pow(2, attempt)); 
-                    var jitter = TimeSpan.FromMilliseconds(Random.Shared.Next(0, 1000)); 
-                    return baseDelay + jitter; 
-                }
-        ));
+        .AddPolicyHandler((sp, request) =>
+        {
+            var logger = sp.GetRequiredService<ILogger<BinanceClient>>();
+            return HttpPolicyExtensions
+                .HandleTransientHttpError()
+                .WaitAndRetryAsync(
+                    retryCount: 3, 
+                    sleepDurationProvider: attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)) + TimeSpan.FromMilliseconds(Random.Shared.Next(0, 1000)),
+                    onRetry: (outcome, timespan, retryAttempt, context) =>
+                    {
+                        logger.LogWarning("Binance API geçici hata verdi ({ErrorMessage}). {DelaySeconds:F1} sn sonra tekrar deneniyor (Deneme: {RetryCount}).",
+                            outcome.Exception?.Message ?? $"HTTP {(int?)outcome.Result?.StatusCode}",
+                            timespan.TotalSeconds,
+                            retryAttempt);
+                    });
+        });
 
-        // [DÜZELTİLDİ]: BinanceClient, genel IPriceProvider havuzuna ekleniyor.
         services.AddTransient<IPriceProvider>(sp => sp.GetRequiredService<BinanceClient>());
 
         // --- FREE CURRENCY CLIENT CONFIGURATION ---
@@ -117,27 +118,30 @@ public static class DependencyInjection
         var fcApiKeyRaw = configuration["FreeCurrency:ApiKey"] ?? throw new InvalidOperationException("FreeCurrency:ApiKey is missing.");
         var fcApiKey = new string(fcApiKeyRaw.Where(c => c >= 32 && c <= 126).ToArray());
 
-        // [DÜZELTİLDİ]: IFreeCurrencyClient silindi, doğrudan FreeCurrencyClient olarak kaydediliyor.
         services.AddHttpClient<FreeCurrencyClient>(client =>
         {
             client.BaseAddress = new Uri(fcBaseUrl);
-            
             client.DefaultRequestHeaders.TryAddWithoutValidation("apikey", fcApiKey);
-            
             client.Timeout = TimeSpan.FromSeconds(15);
         })
-        .AddTransientHttpErrorPolicy(policyBuilder =>
-            policyBuilder.WaitAndRetryAsync(
-                retryCount: 3, 
-                sleepDurationProvider: attempt => 
-                {
-                    var baseDelay = TimeSpan.FromSeconds(Math.Pow(2, attempt)); 
-                    var jitter = TimeSpan.FromMilliseconds(Random.Shared.Next(0, 1000)); 
-                    return baseDelay + jitter; 
-                }
-        ));
+        .AddPolicyHandler((sp, request) =>
+        {
+            var logger = sp.GetRequiredService<ILogger<FreeCurrencyClient>>();
+            return HttpPolicyExtensions
+                .HandleTransientHttpError()
+                .WaitAndRetryAsync(
+                    retryCount: 3, 
+                    sleepDurationProvider: attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)) + TimeSpan.FromMilliseconds(Random.Shared.Next(0, 1000)),
+                    onRetry: (outcome, timespan, retryAttempt, context) =>
+                    {
+                        // Seq'te gördüğün o 'Deneme: []' hatasını düzelten kusursuz eşleşme:
+                        logger.LogWarning("FreeCurrency API geçici hata verdi ({ErrorMessage}). {DelaySeconds:F1} sn sonra tekrar deneniyor (Deneme: {RetryCount}).",
+                            outcome.Exception?.Message ?? $"HTTP {(int?)outcome.Result?.StatusCode}",
+                            timespan.TotalSeconds,
+                            retryAttempt);
+                    });
+        });
 
-        // [DÜZELTİLDİ]: FreeCurrencyClient, genel IPriceProvider havuzuna ekleniyor.
         services.AddTransient<IPriceProvider>(sp => sp.GetRequiredService<FreeCurrencyClient>());
         
         // --- YAHOO FINANCE CLIENT CONFIGURATION ---

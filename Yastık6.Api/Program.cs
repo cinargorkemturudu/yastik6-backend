@@ -48,6 +48,19 @@ try
         loggerConfiguration
             .ReadFrom.Configuration(context.Configuration)
             .Enrich.FromLogContext()
+            // [YENİ 1]: Her loga eşsiz bir İstek Kimliği (Trace ID) basar. Hata takibini kusursuzlaştırır.
+            .Enrich.WithCorrelationIdHeader("X-Correlation-Id")
+            
+            // [YENİ 2]: Siber bot taramalarını (Zombies) Seq'e ulaşmadan havada yok eden Gümrük Memuru!
+            .Filter.ByExcluding(logEvent => 
+            {
+                if (logEvent.Properties.TryGetValue("RequestPath", out var pathValue))
+                {
+                    var path = pathValue.ToString().ToLowerInvariant();
+                    return path.Contains(".env") || path.Contains("cgi-bin") || path.Contains("wp-admin") || path.Contains("stok");
+                }
+                return false;
+            })
             .WriteTo.Console()
             .WriteTo.Seq(seqUrl) // Çalışma zamanındaki tüm logları Seq paneline akıtır
             .WriteTo.File(
@@ -150,6 +163,15 @@ try
     app.UseSerilogRequestLogging(options =>
     {
         options.MessageTemplate = "HTTP {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.0000} ms";
+        
+        // [YENİ 3]: Canlı (Prod) ortamda başarılı istekleri (HTTP 200) yutar, diski korur. 
+        // Sadece HTTP 400 ve üstü hatalar Seq'e Warning olarak düşer.
+        options.GetLevel = (httpContext, elapsed, ex) => 
+        {
+            return ex != null || httpContext.Response.StatusCode >= 400 
+                ? Serilog.Events.LogEventLevel.Warning 
+                : Serilog.Events.LogEventLevel.Debug;
+        };
     });
 
     app.UseResponseCompression();
@@ -158,8 +180,6 @@ try
     app.UseRateLimiter();
 
     // --- İHANET ALARMI (SECURITY SHIELD) MIDDLEWARE ---
-    // Eğer tanımlanmayan (beklenmeyen) bir rotaya istek gelir ve sistem yanlışlıkla 
-    // başarılı (200-299) dönerse, anında Telegram'a "Sızıntı Şüphesi" alarmı gönderir.
     app.Use(async (context, next) =>
     {
         var path = context.Request.Path.Value?.ToLowerInvariant() ?? "";
