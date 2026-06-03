@@ -1,46 +1,49 @@
 using Microsoft.EntityFrameworkCore;
-using Polly; 
 using YahooFinanceApi;
-using Yastık6.Api.Application.Common.Interfaces;
 using Yastık6.Api.Application.Features.Prices;
 using Yastık6.Api.Infrastructure.Caching;
 using Yastık6.Api.Infrastructure.Persistence;
-using Yastık6.Api.Infrastructure.Alerts; 
+using Yastık6.Api.Infrastructure.Alerts;
+using Yastık6.Api.Infrastructure.Providers.Base;
+using Yastık6.Api.Application.Common.Interfaces;
 
 namespace Yastık6.Api.Infrastructure.Providers.YahooFinance;
 
-public abstract class YahooFinanceBase : IPriceProvider
+public abstract class YahooFinanceBase : BasePriceClient
 {
     private readonly IServiceScopeFactory _scopeFactory;
-    private readonly ILogger _logger;
 
-    protected YahooFinanceBase(IServiceScopeFactory scopeFactory, ILogger logger)
+    // [DÜZELTİLDİ]: ILogger, AlertTracker ve ISystemClock artık DI üzerinden alınıp "base" (Anakart) sınıfına yollanıyor.
+    protected YahooFinanceBase(
+        IServiceScopeFactory scopeFactory, 
+        ILogger<YahooFinanceBase> logger, 
+        AlertTracker tracker, 
+        ISystemClock clock) 
+        : base(logger, tracker, clock)
     {
         _scopeFactory = scopeFactory;
-        _logger = logger;
     }
 
-    public abstract string ProviderName { get; }
-    public abstract TimeSpan RefreshInterval { get; }
+    // Base sınıftaki (abstract/virtual) özellikleri eziyoruz (override)
+    public override abstract string ProviderName { get; }
+    public override abstract TimeSpan RefreshInterval { get; }
     protected abstract string[] TargetSymbolTypes { get; }
-    public virtual TimeSpan MarketCloseTime => TimeSpan.FromHours(23.99);
+    public override TimeSpan MarketCloseTime => TimeSpan.FromHours(23.99);
 
-    public virtual bool IsMarketOpen()
+    public override bool IsMarketOpen()
     {
-        var today = DateTime.UtcNow.DayOfWeek;
+        // [DÜZELTİLDİ]: DateTime.UtcNow yerine base sınıftan gelen Clock objesi kullanılıyor
+        var today = Clock.UtcNow.DayOfWeek; 
         return today != DayOfWeek.Saturday && today != DayOfWeek.Sunday;
     }
 
-    public async Task<List<LatestPriceResponse>> GetMarketOverviewAsync(CancellationToken ct = default)
+    // [DÜZELTİLDİ]: GetMarketOverviewAsync yerine, Anakartın beklediği "FetchDataAsync" metodunu override ediyoruz
+    protected override async Task<List<LatestPriceResponse>> FetchDataAsync(CancellationToken ct = default)
     {
         using var scope = _scopeFactory.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        
         var snapshotStore = scope.ServiceProvider.GetRequiredService<IPriceSnapshotStore>();
         
-        // [YENİ]: Akıllı defteri scope üzerinden yakalıyoruz.
-        var tracker = scope.ServiceProvider.GetService<AlertTracker>();
-
         var activeSymbols = await dbContext.TrackedSymbols
             .Where(s => s.IsActive && TargetSymbolTypes.Contains(s.SymbolType))
             .ToListAsync(ct);
@@ -52,7 +55,8 @@ public abstract class YahooFinanceBase : IPriceProvider
 
         var symbolsToFetch = new List<string>();
         
-        var stalenessThreshold = DateTimeOffset.UtcNow.AddMinutes(-15); 
+        // [DÜZELTİLDİ]: DateTimeOffset.UtcNow yerine zaman motorunu kullandık
+        var stalenessThreshold = Clock.UtcNow.AddMinutes(-15); 
 
         foreach (var dbSymbol in activeSymbols)
         {
@@ -75,68 +79,47 @@ public abstract class YahooFinanceBase : IPriceProvider
         var chunks = symbolsToFetch.Chunk(50); 
         var random = new Random(); 
 
-        var retryPolicy = Policy
-            .Handle<Exception>()
-            .WaitAndRetryAsync(
-                retryCount: 2, 
-                sleepDurationProvider: attempt => TimeSpan.FromSeconds(2 * attempt),
-                onRetry: (exception, timeSpan, retryCount) => 
-                {
-                    _logger.LogWarning("Yahoo API geçici hata verdi ({Message}). {Delay} saniye sonra tekrar deneniyor (Deneme: {RetryCount}).", exception.Message, timeSpan.TotalSeconds, retryCount);
-                });
-
         foreach (var chunk in chunks)
         {
             try
             {
-                await retryPolicy.ExecuteAsync(async () => 
-                {
-                    var securities = await Yahoo.Symbols(chunk).QueryAsync(ct);
-                    foreach (var kvp in securities)
-                    {
-                        var symbolCode = kvp.Key;
-                        var security = kvp.Value;
-                        
-                        var dbSymbol = activeSymbols.FirstOrDefault(s => string.Equals(s.Code, symbolCode, StringComparison.OrdinalIgnoreCase));
-                        
-                        if (dbSymbol == null) continue;
-                        
-                        var mappedItem = YahooFinanceMapper.MapToResponse(
-                            symbolCode, 
-                            security, 
-                            dbSymbol.SymbolType, 
-                            ProviderName);
-
-                        if (mappedItem != null)
-                        {
-                            results.Add(mappedItem);
-                            
-                            // [MÜJDE]: Fiyatı çektik, deftere (varsa) sabıkayı sil diyoruz.
-                            tracker?.MarkAsResolved($"ZeroPrice_{symbolCode}");
-                        }
-                    }
-                });
+                // [SİLİNDİ]: Polly Retry policy'sini kaldırdık çünkü artık istek zaten Anakarttaki Polly'nin içinden buraya düşüyor.
+                var securities = await Yahoo.Symbols(chunk).QueryAsync(ct);
                 
-                // [MÜJDE]: Yahoo Chunk başarılı olduysa, olası altyapı çöküş sabıkasını sil.
-                if (tracker?.MarkAsResolved($"SYS_Yahoo_Api_Down") == true)
+                foreach (var kvp in securities)
                 {
-                    _logger.LogInformation("✅ Yahoo API tekrar bağlantı kurdu ve veri çekimi başarılı.");
+                    var symbolCode = kvp.Key;
+                    var security = kvp.Value;
+                    
+                    var dbSymbol = activeSymbols.FirstOrDefault(s => string.Equals(s.Code, symbolCode, StringComparison.OrdinalIgnoreCase));
+                    
+                    if (dbSymbol == null) continue;
+                    
+                    var mappedItem = YahooFinanceMapper.MapToResponse(
+                        symbolCode, 
+                        security, 
+                        dbSymbol.SymbolType, 
+                        ProviderName);
+
+                    if (mappedItem != null)
+                    {
+                        results.Add(mappedItem);
+                        
+                        // Base sınıfta korumalı (protected) olan Tracker'ı kullanabiliyoruz
+                        Tracker.MarkAsResolved($"ZeroPrice_{symbolCode}");
+                    }
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Yahoo Finance üzerinden {ProviderName} için veri çekilirken hata oluştu.", ProviderName);
-
-                // [VIP ALTYAPI KRİZİ]: Deftere sistemi kanatacak hatayı yaz!
-                tracker?.ShouldSendAlert("SYS_Yahoo_Api_Down");
-
+                // [ÖNEMLİ DETAY]: Genel SYS_Yahoo_Api_Down loglarını ve sabıkalarını artık Anakart halledecek.
+                // Biz burada sadece Yahoo'ya HAS olan o 429 Shadow Ban durumunu yakalamak için try-catch tuttuk.
                 if (ex.Message.Contains("429") || ex.Message.Contains("Too Many Requests") || ex.Message.Contains("Forbidden"))
                 {
                     var alertService = scope.ServiceProvider.GetService<IAlertService>();
                     if (alertService != null)
                     {
-                        // [VIP ALTYAPI KRİZİ]: Shadow Ban özel sabıkası
-                        tracker?.ShouldSendAlert("SYS_Yahoo_ShadowBan");
+                        Tracker.ShouldSendAlert("SYS_Yahoo_ShadowBan");
                         
                         _ = alertService.SendAlertAsync(
                             $"🚫 *YAHOO SHADOW BAN*\nModül: `{ProviderName}`\nÇok fazla istek atıldı, IP adresi geçici kısıtlandı!", 
@@ -144,6 +127,10 @@ public abstract class YahooFinanceBase : IPriceProvider
                             ct);
                     }
                 }
+                
+                // [KRİTİK]: Yakaladığımız hatayı fırlatıyoruz (throw) ki Evrensel Anakart (BasePriceClient)
+                // bunu yakalayıp genel Retry mekanizmasını (Polly) tetikleyebilsin ve sistemi güvenle durdursun.
+                throw; 
             }
 
             var jitterMs = random.Next(0, 300);

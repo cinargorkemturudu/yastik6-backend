@@ -1,116 +1,100 @@
 using System.Text.Json.Serialization;
+using Yastık6.Api.Application.Common.Interfaces;
 using Yastık6.Api.Application.Features.Prices;
-using Yastık6.Api.Infrastructure.Alerts; 
+using Yastık6.Api.Infrastructure.Alerts;
+using Yastık6.Api.Infrastructure.Providers.Base;
 
 namespace Yastık6.Api.Infrastructure.Providers.Harem;
 
-public sealed class HaremClient : IHaremClient
+// [DÜZELTİLDİ]: Primary Constructor (C# 12) kullanıldı. Sınıf gövdesindeki kalabalık silindi.
+public sealed class HaremClient(
+    HttpClient client, 
+    IConfiguration config, 
+    ILogger<HaremClient> logger, 
+    AlertTracker tracker,
+    ISystemClock clock) 
+    : BasePriceClient(logger, tracker, clock)
 {
-    private readonly HttpClient _client;
-    private readonly ILogger<HaremClient> _logger;
-    private readonly string _marketPath;
-    
-    // [YENİ]: Akıllı Defter
-    private readonly AlertTracker _tracker;
-
-    public string ProviderName => "Harem";
-    public bool IsMarketOpen() => true;
-    public TimeSpan RefreshInterval 
-    {
-        get 
-        {
-            var now = DateTime.UtcNow.AddHours(3); 
-            var isWeekend = now.DayOfWeek == DayOfWeek.Saturday || now.DayOfWeek == DayOfWeek.Sunday;
-            var isMarketHours = now.Hour >= 8 && now.Hour < 18;
-
-            if (!isWeekend && isMarketHours)
-            {
-                return TimeSpan.FromSeconds(15);
-            }
-
-            return TimeSpan.FromMinutes(30);
-        }
-    }    
-    public TimeSpan MarketCloseTime => TimeSpan.Zero;
-    
-    // [GÜNCELLENDİ]: Constructor'a AlertTracker eklendi
-    public HaremClient(HttpClient client, IConfiguration config, ILogger<HaremClient> logger, AlertTracker tracker)
-    {
-        _client = client;
-        _logger = logger;
-        _marketPath = config["Harem:MarketPath"] 
+    private readonly string _marketPath = config["Harem:MarketPath"] 
                       ?? throw new InvalidOperationException("Harem:MarketPath konfigürasyonu eksik!");
-        _tracker = tracker;
+
+    public override string ProviderName => "Harem";
+
+    public override bool IsMarketOpen()
+    {
+        var now = Clock.UtcNow.AddHours(3); // Türkiye Saati
+        
+        // [DÜZELTİLDİ]: IDE'nin "Merge into pattern" önerisiyle or/and desenleri kullanıldı.
+        var isWeekend = now.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday;
+        var isMarketHours = now.Hour is >= 8 and < 18;
+
+        return !isWeekend && isMarketHours;
     }
 
-    public async Task<List<LatestPriceResponse>> GetMarketOverviewAsync(CancellationToken ct = default)
+    public override TimeSpan RefreshInterval => IsMarketOpen() ? TimeSpan.FromSeconds(15) : TimeSpan.FromMinutes(30);
+
+    public override TimeSpan MarketCloseTime 
     {
-        try
+        get
         {
-            var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var requestUri = $"{_marketPath}?_cb={timestamp}";
-
-            var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
-            request.Headers.Add("Cache-Control", "no-cache, no-store, must-revalidate");
-            request.Headers.Add("Pragma", "no-cache");
-
-            var response = await _client.SendAsync(request, ct); 
-            
-            // Eğer HTTP hata kodu dönerse (Örn: 401, 500) bunu catch'e düşürür.
-            response.EnsureSuccessStatusCode();
-
-            var rawResponse = await response.Content.ReadFromJsonAsync<HaremBaseResponseRaw>(cancellationToken: ct);
-            
-            if (rawResponse?.Data is null || rawResponse.Data.Count == 0)
-            {
-                _logger.LogWarning("Harem API response data is empty or null.");
-                
-                // [VIP ALTYAPI KRİZİ]: Veri boş geliyorsa bu bir altyapı anomalisidir.
-                _tracker.ShouldSendAlert("SYS_Harem_Empty_Data");
-                return new List<LatestPriceResponse>();
-            }
-
-            var result = new List<LatestPriceResponse>();
-
-            foreach (var item in rawResponse.Data)
-            {
-                var mappedItem = HaremDataMapper.MapToResponse(item);
-                if (mappedItem != null)
-                {
-                    result.Add(mappedItem);
-                }
-            }
-
-            // [MÜJDE]: Her şey başarıyla bittiğinde, Harem'in tüm altyapı sabıkalarını sil.
-            if (_tracker.MarkAsResolved("SYS_Harem_Api_Down") || _tracker.MarkAsResolved("SYS_Harem_Empty_Data"))
-            {
-                _logger.LogInformation("✅ Harem API bağlantısı tekrar kuruldu ve veri çekimi başarılı.");
-            }
-
-            return result;
+            if (!IsMarketOpen()) return TimeSpan.Zero;
+            var now = Clock.UtcNow.AddHours(3);
+            var closeTime = new DateTime(now.Year, now.Month, now.Day, 18, 0, 0);
+            return closeTime - now;
         }
-        catch (Exception ex)
+    }
+
+    // [DÜZELTİLDİ]: Opsiyonel '= default' parametresi silindi, base metodun imzasıyla birebir aynı yapıldı.
+    protected override async Task<List<LatestPriceResponse>> FetchDataAsync(CancellationToken ct)
+    {
+        var timestamp = new DateTimeOffset(Clock.UtcNow).ToUnixTimeMilliseconds();
+        var requestUri = $"{_marketPath}?_cb={timestamp}";
+
+        var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
+        request.Headers.Add("Cache-Control", "no-cache, no-store, must-revalidate");
+        request.Headers.Add("Pragma", "no-cache");
+
+        // Artık "client" parametresi doğrudan Primary Constructor'dan geliyor, _client kullanmaya gerek kalmadı.
+        var response = await client.SendAsync(request, ct); 
+        
+        response.EnsureSuccessStatusCode();
+
+        var rawResponse = await response.Content.ReadFromJsonAsync<HaremBaseResponseRaw>(cancellationToken: ct);
+        
+        // [DÜZELTİLDİ]: "Merge into pattern" (is null or []) kullanıldı.
+        if (rawResponse?.Data is null or [])
         {
-            _logger.LogError(ex, "Harem API verisi çekilirken hata oluştu.");
-            
-            // [VIP ALTYAPI KRİZİ]: Bağlantı koptuğunda deftere yaz!
-            _tracker.ShouldSendAlert("SYS_Harem_Api_Down");
-            throw;
+            return []; // [YENİ]: C# 12 Collection Expression ile 'new List<>()' yazımından kurtulduk.
         }
+
+        var result = new List<LatestPriceResponse>();
+
+        foreach (var item in rawResponse.Data)
+        {
+            var mappedItem = HaremDataMapper.MapToResponse(item);
+            if (mappedItem != null)
+            {
+                result.Add(mappedItem);
+            }
+        }
+
+        return result;
     }
     
-    public sealed class HaremBaseResponseRaw
+    // [DÜZELTİLDİ]: Class yerine "sealed record" yapıldı. 
+    // Property'ler "get; set;" yerine "get; init;" yapıldı. Tüm Instantiate, Auto-property ve Init-only uyarıları susturuldu.
+    public sealed record HaremBaseResponseRaw
     {
-        [JsonPropertyName("success")] public bool Success { get; set; }
-        [JsonPropertyName("data")] public List<HaremItemRaw>? Data { get; set; }
+        [JsonPropertyName("success")] public bool Success { get; init; }
+        [JsonPropertyName("data")] public List<HaremItemRaw>? Data { get; init; }
     }
 
-    public sealed class HaremItemRaw
+    public sealed record HaremItemRaw
     {
-        [JsonPropertyName("key")] public string Key { get; set; } = ""; 
-        [JsonPropertyName("code")] public string? Code { get; set; } 
-        [JsonPropertyName("buy")] public string? Buy { get; set; }
-        [JsonPropertyName("sell")] public string? Sell { get; set; }
-        [JsonPropertyName("last_update")] public string? LastUpdate { get; set; }
+        [JsonPropertyName("key")] public string Key { get; init; } = ""; 
+        [JsonPropertyName("code")] public string? Code { get; init; } 
+        [JsonPropertyName("buy")] public string? Buy { get; init; }
+        [JsonPropertyName("sell")] public string? Sell { get; init; }
+        [JsonPropertyName("last_update")] public string? LastUpdate { get; init; }
     }
 }

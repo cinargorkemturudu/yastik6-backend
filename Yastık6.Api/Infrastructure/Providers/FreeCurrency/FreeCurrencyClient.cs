@@ -1,53 +1,44 @@
+using Yastık6.Api.Application.Common.Interfaces;
 using Yastık6.Api.Application.Features.Prices;
 using Yastık6.Api.Infrastructure.Alerts;
+using Yastık6.Api.Infrastructure.Providers.Base;
+using Yastık6.Api.Infrastructure.Time;
 
 namespace Yastık6.Api.Infrastructure.Providers.FreeCurrency;
 
-public sealed class FreeCurrencyClient : IFreeCurrencyClient
+public sealed class FreeCurrencyClient(
+    HttpClient client, 
+    IConfiguration config, 
+    ILogger<FreeCurrencyClient> logger, 
+    AlertTracker tracker, 
+    ISystemClock clock) 
+    : BasePriceClient(logger, tracker, clock)
 {
-    private readonly HttpClient _client;
-    private readonly string _apiKey;
-    private readonly ILogger<FreeCurrencyClient> _logger;
-    private readonly AlertTracker _tracker;
+    private readonly string _apiKey = config["FreeCurrency:ApiKey"] 
+                                      ?? throw new InvalidOperationException("FreeCurrency API Key eksik!");
 
-    public string ProviderName => "FreeCurrency";
+    public override string ProviderName => "FreeCurrency";
 
-    /// <summary>
-    /// Forex piyasası Hafta Sonu (Cumartesi ve Pazar) kapalıdır.
-    /// Pazartesi 00:00 ile Cuma 23:59:59 arası açıktır.
-    /// </summary>
-    public bool IsMarketOpen()
+    public override bool IsMarketOpen()
     {
-        // İstanbul zaman dilimine göre (UTC+3) kontrol etmek istersen DateTime.UtcNow.AddHours(3) kullanabilirsin.
-        // Şimdilik standart sunucu saati üzerinden haftanın gününü kontrol ediyoruz.
-        var today = DateTime.Now.DayOfWeek;
-        
-        return today != DayOfWeek.Saturday && today != DayOfWeek.Sunday;
+        var today = Clock.UtcNow.DayOfWeek;
+        return today is not DayOfWeek.Saturday and not DayOfWeek.Sunday;
     }
 
-    /// <summary>
-    /// Eğer piyasa açıksa 30 dakikada bir yenile (böylece hafta içi kotayı dengeli harcarız).
-    /// Piyasa kapalıysa (Hafta sonu) istek atmayı tamamen kesmek için interval'i çok yüksek tutabilirsin 
-    /// ya da üst katmanda IsMarketOpen() false ise bu client'ı hiç tetiklemezsin.
-    /// </summary>
-    public TimeSpan RefreshInterval => IsMarketOpen() ? TimeSpan.FromMinutes(30) : TimeSpan.FromHours(24);
+    public override TimeSpan RefreshInterval => IsMarketOpen() ? TimeSpan.FromMinutes(30) : TimeSpan.FromHours(24);
     
-    /// <summary>
-    /// Cuma gecesi kapanış saatine ne kadar kaldığını hesaplar (Opsiyonel / Üst katman logları veya cache için).
-    /// </summary>
-    public TimeSpan MarketCloseTime
+    public override TimeSpan MarketCloseTime
     {
         get
         {
             if (!IsMarketOpen()) return TimeSpan.Zero;
 
-            var now = DateTime.Now;
+            var now = Clock.UtcNow;
             if (now.DayOfWeek == DayOfWeek.Friday)
             {
-                return TimeSpan.FromDays(1) - now.TimeOfDay; // Cuma gece yarısına kalan süre
+                return TimeSpan.FromDays(1) - now.TimeOfDay;
             }
 
-            // Cuma gününe kaç gün kaldığını hesapla
             int daysUntilFriday = ((int)DayOfWeek.Friday - (int)now.DayOfWeek + 7) % 7;
             var nextFridayMidnight = now.Date.AddDays(daysUntilFriday + 1);
             
@@ -55,49 +46,19 @@ public sealed class FreeCurrencyClient : IFreeCurrencyClient
         }
     }
 
-    public FreeCurrencyClient(HttpClient client, IConfiguration config, ILogger<FreeCurrencyClient> logger, AlertTracker tracker)
+    protected override async Task<List<LatestPriceResponse>> FetchDataAsync(CancellationToken ct)
     {
-        _client = client;
-        _logger = logger;
-        _tracker = tracker;
-        _apiKey = config["FreeCurrency:ApiKey"] ?? throw new InvalidOperationException("FreeCurrency API Key eksik!");
-    }
+        var response = await client.GetAsync($"/v1/latest?apikey={_apiKey}", ct);
+        response.EnsureSuccessStatusCode();
 
-    public async Task<List<LatestPriceResponse>> GetMarketOverviewAsync(CancellationToken ct = default)
-    {
-        // [MİMARİ DOKUNUŞ]: Üst katman gözden kaçırırsa diye burada da bir savunma hattı (Guard) kuralım.
-        if (!IsMarketOpen())
+        var rawData = await response.Content.ReadFromJsonAsync<FreeCurrencyResponseRaw>(cancellationToken: ct);
+
+        // Veri boşsa sadece boş liste dönüyoruz, alarmı BasePriceClient çalacak.
+        if (rawData?.Data is null)
         {
-            _logger.LogInformation("FreeCurrency: Piyasa kapalı olduğundan API isteği atlanıyor (Hafta sonu koruması).");
-            return new List<LatestPriceResponse>(); // Veya cache'deki son veriyi fırlatan bir mekanizma
+            return [];
         }
 
-        try
-        {
-            var response = await _client.GetAsync($"/v1/latest?apikey={_apiKey}", ct);
-            response.EnsureSuccessStatusCode();
-
-            var rawData = await response.Content.ReadFromJsonAsync<FreeCurrencyResponseRaw>(cancellationToken: ct);
-
-            if (rawData?.Data == null)
-            {
-                _logger.LogWarning("FreeCurrency API boş veri döndü.");
-                _tracker.ShouldSendAlert("SYS_FreeCurrency_Empty_Data");
-                return new List<LatestPriceResponse>();
-            }
-
-            if (_tracker.MarkAsResolved("SYS_FreeCurrency_Api_Down") || _tracker.MarkAsResolved("SYS_FreeCurrency_Empty_Data"))
-            {
-                _logger.LogInformation("✅ FreeCurrency API bağlantısı tekrar kuruldu.");
-            }
-
-            return FreeCurrencyMapper.MapToResponses(rawData.Data);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "FreeCurrency verisi çekilirken hata oluştu.");
-            _tracker.ShouldSendAlert("SYS_FreeCurrency_Api_Down");
-            throw; 
-        }
+        return FreeCurrencyMapper.MapToResponses(rawData.Data);
     }
 }
