@@ -1,11 +1,18 @@
 using Yastık6.Api.Application.Common.Interfaces;
+using Yastık6.Api.Infrastructure.Alerts;
+using Yastık6.Api.Infrastructure.Time;
 
 namespace Yastık6.Api.Infrastructure.Providers.YahooFinance;
 
 public sealed class YahooBistClient : YahooFinanceBase
 {
-    public YahooBistClient(IServiceScopeFactory scopeFactory, ILogger<YahooBistClient> logger) 
-        : base(scopeFactory, logger)
+    // [DÜZELTİLDİ]: AlertTracker ve ISystemClock eklendi, base sınıfa iletildi.
+    public YahooBistClient(
+        IServiceScopeFactory scopeFactory, 
+        ILogger<YahooBistClient> logger,
+        AlertTracker tracker,
+        ISystemClock clock) 
+        : base(scopeFactory, logger, tracker, clock)
     {
     }
 
@@ -17,7 +24,8 @@ public sealed class YahooBistClient : YahooFinanceBase
     
     public override bool IsMarketOpen()
     {
-        var now = DateTime.UtcNow.AddHours(3); // Türkiye Saati
+        // [DÜZELTİLDİ]: DateTime.UtcNow yerine anakarttan gelen Clock kullanılıyor.
+        var now = Clock.UtcNow.AddHours(3); // Türkiye Saati
         var isWeekend = now.DayOfWeek == DayOfWeek.Saturday || now.DayOfWeek == DayOfWeek.Sunday;
         
         var isNormalTrading = now.Hour >= 9 && now.Hour < 18;

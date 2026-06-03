@@ -1,11 +1,20 @@
+using Yastık6.Api.Application.Common.Interfaces;
+using Yastık6.Api.Infrastructure.Alerts;
+using Yastık6.Api.Infrastructure.Time;
+
 namespace Yastık6.Api.Infrastructure.Providers.YahooFinance;
 
 /// Client responsible for fetching Forex market data from Yahoo Finance.
 /// This client manages currency pairs like USD/TRY, EUR/USD, etc.
 public sealed class YahooForexClient : YahooFinanceBase
 {
-    public YahooForexClient(IServiceScopeFactory scopeFactory, ILogger<YahooForexClient> logger) 
-        : base(scopeFactory, logger)
+    // [DÜZELTİLDİ]: AlertTracker ve ISystemClock eklendi, base sınıfa iletildi.
+    public YahooForexClient(
+        IServiceScopeFactory scopeFactory, 
+        ILogger<YahooForexClient> logger,
+        AlertTracker tracker,
+        ISystemClock clock) 
+        : base(scopeFactory, logger, tracker, clock)
     {
     }
 
@@ -20,7 +29,8 @@ public sealed class YahooForexClient : YahooFinanceBase
     /// Global Forex markets close on Friday night (22:00 UTC) and reopen on Sunday night (approx. 21:00 UTC).
     public override bool IsMarketOpen()
     {
-        var now = DateTime.UtcNow;
+        // [DÜZELTİLDİ]: DateTime.UtcNow yerine anakarttan gelen Clock kullanılıyor.
+        var now = Clock.UtcNow;
         var day = now.DayOfWeek;
 
         // Market closes on Friday night at 22:00 UTC.

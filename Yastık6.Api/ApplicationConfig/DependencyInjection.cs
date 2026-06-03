@@ -25,7 +25,9 @@ public static class DependencyInjection
     {
         services.AddMemoryCache();
         
+        // [YENİ]: Saat Motoru ve Akıllı Defter sisteme tanıtıldı
         services.AddSingleton<ISystemClock, SystemClock>();
+        services.AddSingleton<AlertTracker>(); 
 
         var dbPath = configuration["Database:ConnectionString"] ?? "Data Source=yastik.db";
         services.AddDbContext<ApplicationDbContext>(options => options.UseSqlite(dbPath));
@@ -56,7 +58,8 @@ public static class DependencyInjection
         var host = new string(hostRaw.Where(c => c >= 32 && c <= 126).ToArray());
         var apiKey = new string(apiKeyRaw.Where(c => c >= 32 && c <= 126).ToArray());
 
-        services.AddHttpClient<IHaremClient, HaremClient>(client =>
+        // [DÜZELTİLDİ]: IHaremClient silindi, doğrudan HaremClient olarak kaydediliyor.
+        services.AddHttpClient<HaremClient>(client =>
             {
                 client.BaseAddress = new Uri(haremBaseUrl);
             
@@ -84,10 +87,12 @@ public static class DependencyInjection
                     }
                 ));
 
-        services.AddTransient<IPriceProvider>(sp => sp.GetRequiredService<IHaremClient>());
+        // [DÜZELTİLDİ]: HaremClient, genel IPriceProvider havuzuna ekleniyor.
+        services.AddTransient<IPriceProvider>(sp => sp.GetRequiredService<HaremClient>());
         
         // --- BINANCE CLIENT CONFIGURATION ---
-        services.AddHttpClient<IBinanceClient, BinanceClient>(client =>
+        // [DÜZELTİLDİ]: IBinanceClient silindi, doğrudan BinanceClient olarak kaydediliyor.
+        services.AddHttpClient<BinanceClient>(client =>
         {
             client.BaseAddress = new Uri("https://api.binance.com");
             client.Timeout = TimeSpan.FromSeconds(10);
@@ -103,7 +108,8 @@ public static class DependencyInjection
                 }
         ));
 
-        services.AddTransient<IPriceProvider>(sp => sp.GetRequiredService<IBinanceClient>());
+        // [DÜZELTİLDİ]: BinanceClient, genel IPriceProvider havuzuna ekleniyor.
+        services.AddTransient<IPriceProvider>(sp => sp.GetRequiredService<BinanceClient>());
 
         // --- FREE CURRENCY CLIENT CONFIGURATION ---
         var fcBaseUrlRaw = configuration["FreeCurrency:BaseUrl"] ?? "https://api.freecurrencyapi.com";
@@ -111,11 +117,11 @@ public static class DependencyInjection
         var fcApiKeyRaw = configuration["FreeCurrency:ApiKey"] ?? throw new InvalidOperationException("FreeCurrency:ApiKey is missing.");
         var fcApiKey = new string(fcApiKeyRaw.Where(c => c >= 32 && c <= 126).ToArray());
 
-        services.AddHttpClient<IFreeCurrencyClient, FreeCurrencyClient>(client =>
+        // [DÜZELTİLDİ]: IFreeCurrencyClient silindi, doğrudan FreeCurrencyClient olarak kaydediliyor.
+        services.AddHttpClient<FreeCurrencyClient>(client =>
         {
             client.BaseAddress = new Uri(fcBaseUrl);
             
-            // [YENİ]: Limit veya 401 hatalarını engellemek için gerekli anahtar enjeksiyonu
             client.DefaultRequestHeaders.TryAddWithoutValidation("apikey", fcApiKey);
             
             client.Timeout = TimeSpan.FromSeconds(15);
@@ -131,7 +137,8 @@ public static class DependencyInjection
                 }
         ));
 
-        services.AddTransient<IPriceProvider>(sp => sp.GetRequiredService<IFreeCurrencyClient>());
+        // [DÜZELTİLDİ]: FreeCurrencyClient, genel IPriceProvider havuzuna ekleniyor.
+        services.AddTransient<IPriceProvider>(sp => sp.GetRequiredService<FreeCurrencyClient>());
         
         // --- YAHOO FINANCE CLIENT CONFIGURATION ---
         services.AddTransient<IPriceProvider, YahooBistClient>();
