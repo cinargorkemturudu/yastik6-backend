@@ -54,13 +54,16 @@ public class HistoryCacheWarmer : BackgroundService
                 {
                     await priceService.GetHistoryAsync(code, range, stoppingToken);
                 }
-
-                _logger.LogInformation($"✅ [{range}] için tüm grafikler vitrine dizildi (Pre-warmed). Sonraki tazeleme: {refreshInterval.TotalMinutes} dk sonra.");
-            }
+                _logger.LogInformation(
+                    "✅ [{Range}] için tüm grafikler vitrine dizildi (Pre-warmed). Sonraki tazeleme: {RefreshIntervalMinutes} dk sonra.", 
+                    range, 
+                    refreshInterval.TotalMinutes);            }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"❌ [{range}] Hayalet İşçi çalışırken hata oluştu.");
-                
+                _logger.LogError(
+                    ex, 
+                    "❌ [{Range}] Hayalet İşçi çalışırken hata oluştu.", 
+                    range);                
                 // [DÜZELTİLDİ]: Sekretere "{Range}" bazlı özel çelik parmak izi verildi!
                 await _alertService.SendAlertAsync(
                     $"🔥 *CACHE WARMER ÇÖKTÜ*\nGrafikler belleğe dizilemedi. Kullanıcı tarafında ({range}) grafiklerinin yüklenmesi ciddi yavaşlayacaktır!\nHata: `{ex.Message}`", 
