@@ -16,3 +16,13 @@ steps:
 
 - script: dotnet build --configuration Release --no-restore
   displayName: 'Projeyi Derle (Build)'
+  
+  -script: dotnet publish --configuration Release --no-restore
+   displayName: 'Projeyi Yayın Klasörüne Çıkar (Publish)'
+   
+- task: PublishBuildArtifacts@1
+  displayName: 'Yayın Klasörünü Eser Olarak Kaydet (Artifact)'
+  inputs:
+    PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+    ArtifactName: 'drop'
+    publishLocation: 'Container'
