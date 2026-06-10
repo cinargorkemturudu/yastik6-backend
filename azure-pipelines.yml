@@ -9,7 +9,7 @@ steps:
   displayName: '.NET SDK Kurulumu'
   inputs:
     packageType: 'sdk'
-    version: '10.x'celle
+    version: '10.x'
 
 - script: dotnet restore
   displayName: 'Bağımlılıkları Yükle (Restore)'
