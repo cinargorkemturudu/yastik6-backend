@@ -2,7 +2,7 @@ trigger:
 - main
 
 pool:
-  name: 'Yastik6-Oracle-Pool' # Havuzu oluştururken verdiğin tam ismi buraya yazmalısın
+  name: 'yastik6' # Havuzu oluştururken verdiğin tam ismi buraya yazmalısın
 
 steps:
 - task: UseDotNet@2
