@@ -1,0 +1,18 @@
+trigger:
+- main
+
+pool:
+  name: 'Yastik6-Oracle-Pool' # Havuzu oluştururken verdiğin tam ismi buraya yazmalısın
+
+steps:
+- task: UseDotNet@2
+  displayName: '.NET SDK Kurulumu'
+  inputs:
+    packageType: 'sdk'
+    version: '10.x'celle
+
+- script: dotnet restore
+  displayName: 'Bağımlılıkları Yükle (Restore)'
+
+- script: dotnet build --configuration Release --no-restore
+  displayName: 'Projeyi Derle (Build)'
