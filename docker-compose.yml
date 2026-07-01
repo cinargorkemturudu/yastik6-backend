@@ -4,14 +4,15 @@ services:
   yastik6-api:
     container_name: yastik6_backend
     build:
-      context: ./Yastık6.Api      
+      context: .
       dockerfile: Dockerfile
-    restart: unless-stopped       
+    restart: unless-stopped
     ports:
-      - "8080:8080"               
+      - "80:8080"
     env_file:
-      - .env                      
+      - .env
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
+      - TZ=Europe/Istanbul
     volumes:
-      - ./database_data:/app/DatabaseData 
+      - ./server_data:/app/data
