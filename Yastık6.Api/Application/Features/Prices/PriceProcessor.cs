@@ -32,31 +32,58 @@ public sealed class PriceProcessor : IPriceProcessor
         CancellationToken ct = default)
     {
         var processedPrices = new List<LatestPriceResponse>();
-
-        // BFF Stratejisi için Dolar/TL kurunu önbellekten (Cache) güvenle alıyoruz
-        var currentUsdPrice = rawPrices.FirstOrDefault(p => p.ProductCode == "USDTRY=X")?.Ask
-                              ?? _snapshotStore.Current?.Items.FirstOrDefault(p => p.ProductCode == "USDTRY=X")?.Ask 
-                              ?? 0m;
-
-        // Kalkan doğrulamalarında geçmiş durumla kıyaslama yapabilmek için mevcut RAM önbelleğini çekiyoruz
         var currentSnapshot = _snapshotStore.Current?.Items.ToDictionary(p => p.ProductCode)
                               ?? new Dictionary<string, LatestPriceResponse>();
 
+        // 1. PRE-FLIGHT SHIELD: USDTRY oranını kullanmadan ÖNCE Kalkan'dan geçiriyoruz
+        var rawUsd = rawPrices.FirstOrDefault(p => p.ProductCode == "USDTRY=X");
+        decimal currentUsdPrice = 0m;
+
+        if (rawUsd != null)
+        {
+            currentSnapshot.TryGetValue("USDTRY=X", out var existingUsd);
+            
+            // Eğer USDTRY fiyatı geçerliyse kuru onayla, değilse pas geç
+            if (await _shieldValidator.ValidatePriceAsync(rawUsd, existingUsd, ct))
+            {
+                currentUsdPrice = rawUsd.Ask;
+            }
+        }
+        
+        // Eğer güncel kur gelmediyse veya kalkan reddettiyse, RAM'deki son güvenli kuru kullan
+        if (currentUsdPrice <= 0)
+        {
+            currentUsdPrice = currentSnapshot.TryGetValue("USDTRY=X", out var cachedUsd) ? cachedUsd.Ask : 0m;
+        }
+
         foreach (var price in rawPrices)
         {
+            // USDTRY'yi yukarıda zaten kalkanla doğruladık, listeye ekleyip geçiyoruz
+            if (price.ProductCode == "USDTRY=X")
+            {
+                if (currentUsdPrice == price.Ask) processedPrices.Add(price);
+                continue;
+            }
+
             var finalPrice = price;
 
-            // 1. ADIM (BFF STRATEJİSİ): Kripto varlıkları en başta, işlem yapmadan Türk Lirasına çeviriyoruz
+            // 2. CPU PROTECTION (FAIL FAST): Çöp veri için hafıza ayırmadan önce reddet
+            if (finalPrice.Ask <= 0 || finalPrice.Bid <= 0)
+            {
+                // Sadece alert atsın diye kalkana yolluyoruz
+                await _shieldValidator.ValidatePriceAsync(finalPrice, null, ct);
+                continue;
+            }
+
+            // 3. APPLES-TO-APPLES: Kriptoları doğrulanmış kur ile TL'ye çevir
             if (finalPrice.Type == "CRYPTO")
             {
-                // Race Condition: Sistem yeni açıldıysa ve kur henüz gelmediyse yanlış çevrim yapmamak için ertele
                 if (currentUsdPrice <= 0)
                 {
-                    _logger.LogWarning("[BFF Pipeline] USD/TRY oranı henüz hazır olmadığı için {Code} çevirimi ertelendi.", finalPrice.ProductCode);
+                    _logger.LogWarning("[BFF Pipeline] USD/TRY oranı hazır olmadığı için {Code} çevirimi ertelendi.", finalPrice.ProductCode);
                     continue; 
                 }
 
-                // C#'ın Record tipi özelliği (with) ile orijinal nesneyi bozmadan yeni değerlerle kopyalıyoruz
                 finalPrice = finalPrice with 
                 {
                     Bid = finalPrice.Bid * currentUsdPrice,
@@ -66,32 +93,21 @@ public sealed class PriceProcessor : IPriceProcessor
                 };
             }
 
-            // 2. ADIM (MATEMATİK): Artık TL olduğundan emin olduğumuz fiyata göre değişim oranını hesaplıyoruz
-            var previousClose = _previousCloseStore.GetPreviousClose(finalPrice.ProductCode);
-            decimal changeRate = 0m;
-
-            if (previousClose.HasValue && previousClose.Value > 0)
-            {
-                // (Güncel - Eski) / Eski * 100
-                changeRate = ((finalPrice.Ask - previousClose.Value) / previousClose.Value) * 100m;
-            }
-            else
-            {
-                // Eğer dünkü kapanış DB'de yoksa, sağlayıcıdan (örn: Yahoo) hazır gelen oranı kullan
-                changeRate = finalPrice.ChangeRate;
-            }
-
-            // Hesaplanmış değişim oranını virgülden sonra 2 hane kalacak şekilde fiyat nesnemize işliyoruz
-            finalPrice = finalPrice with { ChangeRate = Math.Round(changeRate, 2) };
-
-            // 3. ADIM (KALKANLAR): Oluşturduğumuz kalkan servisine (Shield) gönderip doğrulamadan geçiriyoruz
+            // 4. FLASH CRASH SHIELD: TL ile TL kıyaslaması yapılarak Kalkan devreye sokulur
             currentSnapshot.TryGetValue(finalPrice.ProductCode, out var existingPrice);
-            
-            if (await _shieldValidator.ValidatePriceAsync(finalPrice, existingPrice, ct))
+            if (!await _shieldValidator.ValidatePriceAsync(finalPrice, existingPrice, ct))
             {
-                // Fiyat temiz, onaylananlar listesine ekle
-                processedPrices.Add(finalPrice);
+                continue; 
             }
+
+            // 5. AĞIR MATEMATİK: Sadece Kalkanı geçen tertemiz veriler için çalıştır
+            var previousClose = _previousCloseStore.GetPreviousClose(finalPrice.ProductCode);
+            decimal changeRate = previousClose.HasValue && previousClose.Value > 0
+                ? ((finalPrice.Ask - previousClose.Value) / previousClose.Value) * 100m
+                : finalPrice.ChangeRate;
+
+            finalPrice = finalPrice with { ChangeRate = Math.Round(changeRate, 2) };
+            processedPrices.Add(finalPrice);
         }
 
         return processedPrices;
