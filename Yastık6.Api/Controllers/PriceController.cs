@@ -67,6 +67,7 @@ public sealed class PricesController : ControllerBase
             var fluctuation = (decimal)(random.NextDouble() * 0.02 - 0.01);
             basePrice = basePrice + (basePrice * fluctuation);
 
+            
             records.Add(new PriceRecord
             {
                 Id = Guid.NewGuid(),

@@ -106,7 +106,18 @@ public sealed class PriceProcessor : IPriceProcessor
                 ? ((finalPrice.Ask - previousClose.Value) / previousClose.Value) * 100m
                 : finalPrice.ChangeRate;
 
-            finalPrice = finalPrice with { ChangeRate = Math.Round(changeRate, 2) };
+            // [FIXED]: Veri RAM Cache'e gitmeden önce her iki tarih damgasına da zorla UTC etiketi basıyoruz.
+            // Bu sayede .NET JSON Serializer API yanıtını oluştururken stringin sonuna 'Z' ekleyecek.
+            // [FIXED]: DateTimeOffset uses .ToUniversalTime() to force a +00:00 (UTC) offset.
+            // This guarantees the JSON serializer appends 'Z' or '+00:00' to the string.
+            finalPrice = finalPrice with 
+            { 
+                ChangeRate = Math.Round(changeRate, 2),
+                
+                AsOfUtc = finalPrice.AsOfUtc.ToUniversalTime(),
+                ValidUntilUtc = finalPrice.ValidUntilUtc.ToUniversalTime()
+            };
+
             processedPrices.Add(finalPrice);
         }
 
