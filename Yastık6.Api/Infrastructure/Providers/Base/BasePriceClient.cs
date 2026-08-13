@@ -13,7 +13,7 @@ public abstract class BasePriceClient : IPriceProvider
 {
     protected readonly ILogger Logger;
     protected readonly AlertTracker Tracker;
-    protected readonly ISystemClock Clock; // [ÖNEMLİ]: DateTime.Now yerine artık bunu kullanacağız.
+    protected readonly ISystemClock Clock; 
 
     protected BasePriceClient(ILogger logger, AlertTracker tracker, ISystemClock clock)
     {
@@ -22,37 +22,24 @@ public abstract class BasePriceClient : IPriceProvider
         Clock = clock;
     }
 
-    // Alt sınıfların (Harem, Binance vs.) doldurmak ZORUNDA olduğu (abstract) veya
-    // ezebileceği (virtual) standart kontrat özellikleri:
     public abstract string ProviderName { get; }
     
-    // Varsayılan olarak her zaman açık (Kripto borsaları gibi). Borsa/Altın için alt sınıflarda "override" edilecek.
     public virtual bool IsMarketOpen() => true;
     
     public abstract TimeSpan RefreshInterval { get; }
     
-    // Varsayılan olarak hiç kapanmaz. Borsa/Altın için alt sınıflarda "override" edilecek.
     public virtual TimeSpan MarketCloseTime => TimeSpan.Zero;
 
-    /// <summary>
-    /// Worker'ın (Arka plan servisi) doğrudan çağırdığı tek metottur.
-    /// Alt sınıfların yazdığı FetchDataAsync metodunu "Try-Catch" ve "Polly" kalkanı içinde güvenle çalıştırır.
-    /// </summary>
     public async Task<List<LatestPriceResponse>> GetMarketOverviewAsync(CancellationToken ct = default)
     {
-        // 1. KORUMA: Piyasa kapalıysa hiç istek atma, boş dön.
-        if (!IsMarketOpen())
-        {
-            Logger.LogDebug("{Provider} piyasası şu an kapalı. İstek atlanıyor.", ProviderName);
-            return new List<LatestPriceResponse>();
-        }
+        // DİKKAT: "if (!IsMarketOpen()) return boş;" bloğu TAMAMEN SİLİNDİ!
+        // Çünkü piyasa kapalıyken bile genişletilmiş RefreshInterval ile (örn: 30dk) verinin son halini yoklamak istiyoruz.
 
-        // 2. KORUMA: Polly Retry Politikası (Hata alırsak hemen çökmek yerine biraz bekleyip tekrar dene)
         var retryPolicy = Policy
             .Handle<Exception>()
             .WaitAndRetryAsync(
-                retryCount: 2, // 2 kere daha dene
-                sleepDurationProvider: attempt => TimeSpan.FromSeconds(2 * attempt), // Bekleme süresini artır
+                retryCount: 2, 
+                sleepDurationProvider: attempt => TimeSpan.FromSeconds(2 * attempt), 
                 onRetry: (exception, timeSpan, retryCount) => 
                 {
                     Logger.LogWarning("{Provider} API geçici hata verdi ({Message}). {Delay} sn sonra tekrar deneniyor (Deneme: {RetryCount}).", 
@@ -61,7 +48,6 @@ public abstract class BasePriceClient : IPriceProvider
 
         try
         {
-            // 3. İŞLEM: Alt sınıfın (Harem, Binance) kendi mantığıyla yazacağı gerçek veri çekme metodunu çalıştır.
             var results = await retryPolicy.ExecuteAsync(() => FetchDataAsync(ct));
 
             if (results == null || !results.Any())
@@ -71,28 +57,41 @@ public abstract class BasePriceClient : IPriceProvider
                 return new List<LatestPriceResponse>();
             }
 
-            // 4. MÜJDE: Her şey yolundaysa sabıka kaydını temizle
             if (Tracker.MarkAsResolved($"SYS_{ProviderName}_Api_Down") || 
                 Tracker.MarkAsResolved($"SYS_{ProviderName}_Empty_Data"))
             {
                 Logger.LogInformation("✅ {Provider} API bağlantısı tekrar kuruldu ve veri çekimi başarılı.", ProviderName);
             }
 
-            return results;
+            // --- İŞTE SİHİR BURADA BAŞLIYOR ---
+            
+            // 1. Provider'ın O ANKİ çalışma aralığını al (Açıksa 15sn, kapalıysa 30dk/24s vb.)
+            var currentInterval = RefreshInterval;
+            
+            // 2. Tolerans (Grace Period): Veri tam yenileneceği milisaniyede stale'e düşmesin diye 
+            // interval süresine %20 esneklik payı ekliyoruz. (Örn: 30dk ise 36dk geçerli sayılacak)
+            var gracePeriod = TimeSpan.FromSeconds(currentInterval.TotalSeconds * 0.2);
+            var validityDuration = currentInterval.Add(gracePeriod);
+            
+            var nowUtc = Clock.UtcNow;
+
+            // 3. Alt sınıfların (Mapper'ların) bastığı sahte/yanlış ValidUntilUtc değerlerini acımasızca EZ.
+            // Verinin ömrünü doğrudan Provider'ın kendi nabzına (Interval) bağla.
+            var definitiveResults = results.Select(r => r with 
+            {
+                ValidUntilUtc = nowUtc.Add(validityDuration)
+            }).ToList();
+
+            return definitiveResults;
         }
         catch (Exception ex)
         {
-            // 5. KRİZ YÖNETİMİ: Tüm denemelere rağmen patlarsa (throw YAPMA!), deftere fısılda ve boş dön.
             Logger.LogError(ex, "{Provider} üzerinden veri çekilirken kalıcı hata oluştu.", ProviderName);
             Tracker.ShouldSendAlert($"SYS_{ProviderName}_Api_Down");
             
-            // "throw" kullanmıyoruz ki Worker (ana motor) çökmesin.
             return new List<LatestPriceResponse>(); 
         }
     }
 
-    /// <summary>
-    /// Sadece bu sınıfı miras alan (Harem, Binance) sınıfların doldurmak zorunda olduğu KORUMALI (protected) metot.
-    /// </summary>
     protected abstract Task<List<LatestPriceResponse>> FetchDataAsync(CancellationToken ct);
 }
