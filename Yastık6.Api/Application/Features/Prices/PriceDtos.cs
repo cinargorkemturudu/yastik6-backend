@@ -17,8 +17,6 @@ public sealed record PricePointDto(
     decimal Price
 );
 
-// Application/Features/Prices/PriceDtos.cs
-
 public sealed record LatestPriceResponse(
     string ProductCode,
     string Name, 
@@ -32,7 +30,8 @@ public sealed record LatestPriceResponse(
     DateTimeOffset AsOfUtc,
     DateTimeOffset ValidUntilUtc,
     string Source,
-    bool IsConvertedToTry = false 
+    bool IsConvertedToTry = false,
+    bool IsMarketOpen = true // <-- İŞTE YENİ BAYRAĞIMIZ BURADA
 );
 
 public sealed record PriceHistoryResponse(
