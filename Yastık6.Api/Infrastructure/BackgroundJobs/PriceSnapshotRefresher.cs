@@ -42,8 +42,7 @@ public sealed class PriceSnapshotRefresher : BackgroundService
         {
             var providers = scope.ServiceProvider.GetServices<IPriceProvider>();
             
-            // [KRİTİK DÜZELTME 1]: Yedek oyuncuları (YahooForex ve YahooCrypto) ana sahaya sürmüyoruz.
-            // Onlar sadece DI sepetinde (Yedek Kulübesinde) acil durumlar için bekleyecekler.
+            // [KRİTİK DÜZELTME 1]: Yedek oyuncuları ana sahaya sürmüyoruz.
             providerTypes = providers
                 .Select(p => p.GetType())
                 .Where(t => t.Name != "YahooForexClient" && t.Name != "YahooCryptoClient")
@@ -80,7 +79,9 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                 var clock = scope.ServiceProvider.GetRequiredService<ISystemClock>();
                 var repository = scope.ServiceProvider.GetRequiredService<IPriceHistoryRepository>();
 
-                if (!isFirstRun && !provider.IsMarketOpen())
+                bool isMarketOpen = provider.IsMarketOpen();
+
+                if (!isFirstRun && !isMarketOpen)
                 {
                     await Task.Delay(provider.RefreshInterval, stoppingToken);
                     continue;
@@ -90,7 +91,7 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                 
                 if (rawPrices.Count > 0)
                 {
-                    var verifiedPrices = await _priceProcessor.ProcessPricesAsync(rawPrices, provider.ProviderName, stoppingToken);
+                    var verifiedPrices = await _priceProcessor.ProcessPricesAsync(rawPrices, provider.ProviderName, isMarketOpen, stoppingToken);
 
                     if (verifiedPrices.Count == 0)
                     {
@@ -159,7 +160,6 @@ public sealed class PriceSnapshotRefresher : BackgroundService
             {
                 _logger.LogError(ex, "A critical error occurred while fetching prices for provider {ProviderType}.", providerType.Name);
                 
-                // [KRİTİK DÜZELTME 2]: Akıllı Yedekleme Santrali (Switch)
                 string? fallbackProviderName = providerType.Name switch
                 {
                     "FreeCurrencyClient" => "YahooForexClient",
@@ -178,7 +178,6 @@ public sealed class PriceSnapshotRefresher : BackgroundService
 
                     try
                     {
-                        // DB'ye yazma ameleliğini yapan kodu aşağıya ortak metoda çıkardık (DRY Prensibi)
                         await ExecuteFallbackAsync(fallbackProviderName, stoppingToken);
                     }
                     catch (Exception fallbackEx)
@@ -195,13 +194,11 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                         stoppingToken);
                 }
 
-                // [KRİTİK DÜZELTME 3]: DDoS krizini çözen 5 dakikalık karantina cezası!
                 await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken);
             }
         }
     }
 
-    // [YENİ]: Her iki yedek sağlayıcının da kullandığı, kodu tertemiz yapan ortak veritabanı yazıcı metod.
     private async Task ExecuteFallbackAsync(string fallbackProviderName, CancellationToken stoppingToken)
     {
         using var fallbackScope = _scopeFactory.CreateScope();
@@ -214,11 +211,13 @@ public sealed class PriceSnapshotRefresher : BackgroundService
         var clock = fallbackScope.ServiceProvider.GetRequiredService<ISystemClock>();
         var repository = fallbackScope.ServiceProvider.GetRequiredService<IPriceHistoryRepository>();
 
+        bool isMarketOpen = fallbackProvider.IsMarketOpen();
+
         var fallbackRawPrices = await fallbackProvider.GetMarketOverviewAsync(stoppingToken);
         
         if (fallbackRawPrices.Count > 0)
         {
-            var verifiedPrices = await _priceProcessor.ProcessPricesAsync(fallbackRawPrices, fallbackProvider.ProviderName, stoppingToken);
+            var verifiedPrices = await _priceProcessor.ProcessPricesAsync(fallbackRawPrices, fallbackProvider.ProviderName, isMarketOpen, stoppingToken);
 
             if (verifiedPrices.Count > 0)
             {
