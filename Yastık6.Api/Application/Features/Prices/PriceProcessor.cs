@@ -29,6 +29,7 @@ public sealed class PriceProcessor : IPriceProcessor
     public async Task<List<LatestPriceResponse>> ProcessPricesAsync(
         List<LatestPriceResponse> rawPrices, 
         string providerName, 
+        bool isMarketOpen,
         CancellationToken ct = default)
     {
         var processedPrices = new List<LatestPriceResponse>();
@@ -61,7 +62,15 @@ public sealed class PriceProcessor : IPriceProcessor
             // USDTRY'yi yukarıda zaten kalkanla doğruladık, listeye ekleyip geçiyoruz
             if (price.ProductCode == "USDTRY=X")
             {
-                if (currentUsdPrice == price.Ask) processedPrices.Add(price);
+                if (currentUsdPrice == price.Ask)
+                {
+                    processedPrices.Add(price with 
+                    { 
+                        IsMarketOpen = isMarketOpen,
+                        AsOfUtc = price.AsOfUtc.ToUniversalTime(),
+                        ValidUntilUtc = price.ValidUntilUtc.ToUniversalTime()
+                    });
+                }
                 continue;
             }
 
@@ -75,7 +84,14 @@ public sealed class PriceProcessor : IPriceProcessor
                 continue;
             }
 
-            // 3. APPLES-TO-APPLES: Kriptoları doğrulanmış kur ile TL'ye çevir
+            // 3. DEAD ASSET FILTER: Piyasa açıkken süresi dolmuş ölü verileri (örn: delist olan coinleri) filtrele
+            if (isMarketOpen && finalPrice.ValidUntilUtc < DateTimeOffset.UtcNow)
+            {
+                _logger.LogDebug("[BFF Pipeline] Expired/Dead asset filtered: {ProductCode}", finalPrice.ProductCode);
+                continue;
+            }
+
+            // 4. APPLES-TO-APPLES: Kriptoları doğrulanmış kur ile TL'ye çevir
             if (finalPrice.Type == "CRYPTO")
             {
                 if (currentUsdPrice <= 0)
@@ -93,29 +109,25 @@ public sealed class PriceProcessor : IPriceProcessor
                 };
             }
 
-            // 4. FLASH CRASH SHIELD: TL ile TL kıyaslaması yapılarak Kalkan devreye sokulur
+            // 5. FLASH CRASH SHIELD: TL ile TL kıyaslaması yapılarak Kalkan devreye sokulur
             currentSnapshot.TryGetValue(finalPrice.ProductCode, out var existingPrice);
             if (!await _shieldValidator.ValidatePriceAsync(finalPrice, existingPrice, ct))
             {
                 continue; 
             }
 
-            // 5. AĞIR MATEMATİK: Sadece Kalkanı geçen tertemiz veriler için çalıştır
+            // 6. AĞIR MATEMATİK: Sadece Kalkanı geçen tertemiz veriler için çalıştır
             var previousClose = _previousCloseStore.GetPreviousClose(finalPrice.ProductCode);
             decimal changeRate = previousClose.HasValue && previousClose.Value > 0
                 ? ((finalPrice.Ask - previousClose.Value) / previousClose.Value) * 100m
                 : finalPrice.ChangeRate;
 
-            // [FIXED]: Veri RAM Cache'e gitmeden önce her iki tarih damgasına da zorla UTC etiketi basıyoruz.
-            // Bu sayede .NET JSON Serializer API yanıtını oluştururken stringin sonuna 'Z' ekleyecek.
-            // [FIXED]: DateTimeOffset uses .ToUniversalTime() to force a +00:00 (UTC) offset.
-            // This guarantees the JSON serializer appends 'Z' or '+00:00' to the string.
             finalPrice = finalPrice with 
             { 
                 ChangeRate = Math.Round(changeRate, 2),
-                
                 AsOfUtc = finalPrice.AsOfUtc.ToUniversalTime(),
-                ValidUntilUtc = finalPrice.ValidUntilUtc.ToUniversalTime()
+                ValidUntilUtc = finalPrice.ValidUntilUtc.ToUniversalTime(),
+                IsMarketOpen = isMarketOpen
             };
 
             processedPrices.Add(finalPrice);
