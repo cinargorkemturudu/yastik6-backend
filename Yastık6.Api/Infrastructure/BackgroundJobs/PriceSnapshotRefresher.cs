@@ -83,6 +83,38 @@ public sealed class PriceSnapshotRefresher : BackgroundService
 
                 if (!isFirstRun && !isMarketOpen)
                 {
+                    // [YENİ - HEARTBEAT BUMP]: Piyasa kapalıyken dış API'yi yormuyoruz, 
+                    // ancak RAM cache'deki mevcut verilerin süresini (ValidUntilUtc) ileri sararak 
+                    // bağlantının canlı olduğunu (nabız attığını) kanıtlıyoruz.
+                    lock (CacheLock)
+                    {
+                        var currentSnapshot = _snapshotStore.Current;
+                        if (currentSnapshot != null)
+                        {
+                            var currentDict = currentSnapshot.Items.ToDictionary(p => p.ProductCode);
+                            bool snapshotModified = false;
+
+                            foreach (var item in currentDict.Values.Where(v => v.Source == provider.ProviderName))
+                            {
+                                currentDict[item.ProductCode] = item with 
+                                { 
+                                    ValidUntilUtc = DateTimeOffset.UtcNow.Add(provider.RefreshInterval),
+                                    IsMarketOpen = false
+                                }; 
+                                snapshotModified = true;
+                            }
+
+                            if (snapshotModified)
+                            {
+                                _snapshotStore.Set(new LatestPricesResponse(
+                                    Items: currentDict.Values.ToList(),
+                                    ComputedAtUtc: DateTimeOffset.UtcNow
+                                ));
+                            }
+                        }
+                    }
+
+                    _logger.LogDebug("[HEARTBEAT] Bumped validUntilUtc for closed market: {Provider}", provider.ProviderName);
                     await Task.Delay(provider.RefreshInterval, stoppingToken);
                     continue;
                 }
@@ -107,13 +139,21 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                         var currentDict = currentSnapshot?.Items.ToDictionary(p => p.ProductCode)
                                            ?? new Dictionary<string, LatestPriceResponse>();
 
+                        TimeSpan currentInterval = provider.RefreshInterval;
+
                         foreach (var newPrice in verifiedPrices)
                         {
+                            var safePrice = newPrice with 
+                            {
+                                IsMarketOpen = isMarketOpen, 
+                                ValidUntilUtc = DateTimeOffset.UtcNow.Add(currentInterval)
+                            };
+
                             bool hasPriceChanged = true;
 
-                            if (currentDict.TryGetValue(newPrice.ProductCode, out var existingPrice))
+                            if (currentDict.TryGetValue(safePrice.ProductCode, out var existingPrice))
                             {
-                                if (existingPrice.Ask == newPrice.Ask && existingPrice.Bid == newPrice.Bid)
+                                if (existingPrice.Ask == safePrice.Ask && existingPrice.Bid == safePrice.Bid)
                                 {
                                     hasPriceChanged = false; 
                                 }
@@ -124,16 +164,16 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                                 recordsToInsert.Add(new PriceRecord
                                 {
                                     Id = Guid.NewGuid(),
-                                    ProductCode = newPrice.ProductCode,
-                                    Source = newPrice.Source,
-                                    AskPrice = newPrice.Ask,
-                                    BidPrice = newPrice.Bid,
-                                    LastPrice = newPrice.LastPrice,
+                                    ProductCode = safePrice.ProductCode,
+                                    Source = safePrice.Source,
+                                    AskPrice = safePrice.Ask,
+                                    BidPrice = safePrice.Bid,
+                                    LastPrice = safePrice.LastPrice,
                                     TimestampUtc = clock.UtcNow
                                 });
                             }
 
-                            currentDict[newPrice.ProductCode] = newPrice;
+                            currentDict[safePrice.ProductCode] = safePrice;
                         }
 
                         _snapshotStore.Set(new LatestPricesResponse(
@@ -229,13 +269,21 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                     var currentDict = currentSnapshot?.Items.ToDictionary(p => p.ProductCode)
                                        ?? new Dictionary<string, LatestPriceResponse>();
 
+                    TimeSpan currentInterval = fallbackProvider.RefreshInterval;
+
                     foreach (var newPrice in verifiedPrices)
                     {
+                        var safePrice = newPrice with
+                        {
+                            IsMarketOpen = isMarketOpen,
+                            ValidUntilUtc = DateTimeOffset.UtcNow.Add(currentInterval)
+                        };
+                        
                         bool hasPriceChanged = true;
 
-                        if (currentDict.TryGetValue(newPrice.ProductCode, out var existingPrice))
+                        if (currentDict.TryGetValue(safePrice.ProductCode, out var existingPrice))
                         {
-                            if (existingPrice.Ask == newPrice.Ask && existingPrice.Bid == newPrice.Bid)
+                            if (existingPrice.Ask == safePrice.Ask && existingPrice.Bid == safePrice.Bid)
                             {
                                 hasPriceChanged = false; 
                             }
@@ -246,16 +294,16 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                             recordsToInsert.Add(new PriceRecord
                             {
                                 Id = Guid.NewGuid(),
-                                ProductCode = newPrice.ProductCode,
-                                Source = newPrice.Source,
-                                AskPrice = newPrice.Ask,
-                                BidPrice = newPrice.Bid,
-                                LastPrice = newPrice.LastPrice,
+                                ProductCode = safePrice.ProductCode,
+                                Source = safePrice.Source,
+                                AskPrice = safePrice.Ask,
+                                BidPrice = safePrice.Bid,
+                                LastPrice = safePrice.LastPrice,
                                 TimestampUtc = clock.UtcNow
                             });
                         }
 
-                        currentDict[newPrice.ProductCode] = newPrice;
+                        currentDict[safePrice.ProductCode] = safePrice;
                     }
 
                     _snapshotStore.Set(new LatestPricesResponse(
