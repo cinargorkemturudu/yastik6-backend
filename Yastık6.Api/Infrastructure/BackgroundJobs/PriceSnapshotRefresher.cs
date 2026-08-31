@@ -6,10 +6,6 @@ using Yastık6.Api.Infrastructure.Caching;
 
 namespace Yastık6.Api.Infrastructure.BackgroundJobs;
 
-/// <summary>
-/// Sadece piyasa fiyatlarını periyodik olarak toplamak, iş hattına (Pipeline) paslamak
-/// ve doğrulanmış sonuçları RAM Cache ile Veritabanına yazmakla görevli Altyapı Servisi (Trafik Polisi).
-/// </summary>
 public sealed class PriceSnapshotRefresher : BackgroundService
 {
     private readonly IPriceSnapshotStore _snapshotStore;
@@ -42,9 +38,10 @@ public sealed class PriceSnapshotRefresher : BackgroundService
         {
             var providers = scope.ServiceProvider.GetServices<IPriceProvider>();
             
-            // [KRİTİK DÜZELTME 1]: Yedek oyuncuları ana sahaya sürmüyoruz.
+            // [EDİT 1]: .Distinct() eklendi. DI kayıtlarında oluşabilecek çakışmalar engellendi.
             providerTypes = providers
                 .Select(p => p.GetType())
+                .Distinct() 
                 .Where(t => t.Name != "YahooForexClient" && t.Name != "YahooCryptoClient")
                 .ToList();
             
@@ -83,9 +80,6 @@ public sealed class PriceSnapshotRefresher : BackgroundService
 
                 if (!isFirstRun && !isMarketOpen)
                 {
-                    // [YENİ - HEARTBEAT BUMP]: Piyasa kapalıyken dış API'yi yormuyoruz, 
-                    // ancak RAM cache'deki mevcut verilerin süresini (ValidUntilUtc) ileri sararak 
-                    // bağlantının canlı olduğunu (nabız attığını) kanıtlıyoruz.
                     lock (CacheLock)
                     {
                         var currentSnapshot = _snapshotStore.Current;
@@ -94,11 +88,17 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                             var currentDict = currentSnapshot.Items.ToDictionary(p => p.ProductCode);
                             bool snapshotModified = false;
 
-                            foreach (var item in currentDict.Values.Where(v => v.Source == provider.ProviderName))
+                            // [EDİT 2]: .ToList() eklendi. Koleksiyon döngü içinde değiştirilirken patlaması (InvalidOperationException) önlendi.
+                            var closedMarketItems = currentDict.Values
+                                .Where(v => v.Source == provider.ProviderName)
+                                .ToList();
+
+                            foreach (var item in closedMarketItems)
                             {
                                 currentDict[item.ProductCode] = item with 
                                 { 
-                                    ValidUntilUtc = DateTimeOffset.UtcNow.Add(provider.RefreshInterval),
+                                    // [EDİT 3]: .AddSeconds(5) tolerans tamponu eklendi. Ağ gecikmesi hatası giderildi.
+                                    ValidUntilUtc = DateTimeOffset.UtcNow.Add(provider.RefreshInterval).AddSeconds(5),
                                     IsMarketOpen = false
                                 }; 
                                 snapshotModified = true;
@@ -146,7 +146,8 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                             var safePrice = newPrice with 
                             {
                                 IsMarketOpen = isMarketOpen, 
-                                ValidUntilUtc = DateTimeOffset.UtcNow.Add(currentInterval)
+                                // [EDİT 3]: Normal döngüye de 5 saniyelik ağ gecikme toleransı eklendi.
+                                ValidUntilUtc = DateTimeOffset.UtcNow.Add(currentInterval).AddSeconds(5)
                             };
 
                             bool hasPriceChanged = true;
@@ -276,7 +277,8 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                         var safePrice = newPrice with
                         {
                             IsMarketOpen = isMarketOpen,
-                            ValidUntilUtc = DateTimeOffset.UtcNow.Add(currentInterval)
+                            // [EDİT 3]: Fallback akışına da 5 saniyelik ağ gecikme toleransı eklendi.
+                            ValidUntilUtc = DateTimeOffset.UtcNow.Add(currentInterval).AddSeconds(5)
                         };
                         
                         bool hasPriceChanged = true;
