@@ -9,11 +9,11 @@ namespace Yastık6.Api.Infrastructure.BackgroundJobs;
 public sealed class PriceSnapshotRefresher : BackgroundService
 {
     private readonly IPriceSnapshotStore _snapshotStore;
-    private readonly IPriceProcessor _priceProcessor; 
+    private readonly IPriceProcessor _priceProcessor;
     private readonly ILogger<PriceSnapshotRefresher> _logger;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IAlertService _alertService;
-    
+
     private static readonly object CacheLock = new object();
 
     public PriceSnapshotRefresher(
@@ -37,14 +37,14 @@ public sealed class PriceSnapshotRefresher : BackgroundService
         using (var scope = _scopeFactory.CreateScope())
         {
             var providers = scope.ServiceProvider.GetServices<IPriceProvider>();
-            
+
             // [EDİT 1]: .Distinct() eklendi. DI kayıtlarında oluşabilecek çakışmalar engellendi.
             providerTypes = providers
                 .Select(p => p.GetType())
-                .Distinct() 
+                .Distinct()
                 .Where(t => t.Name != "YahooForexClient" && t.Name != "YahooCryptoClient")
                 .ToList();
-            
+
             _logger.LogInformation("Price refresh service started. Active main providers: {Count}", providerTypes.Count);
         }
 
@@ -55,14 +55,12 @@ public sealed class PriceSnapshotRefresher : BackgroundService
 
     private async Task RunProviderLoopAsync(Type providerType, CancellationToken stoppingToken)
     {
-        bool isFirstRun = true; 
-
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
                 using var scope = _scopeFactory.CreateScope();
-                
+
                 var provider = scope.ServiceProvider.GetServices<IPriceProvider>()
                                     .FirstOrDefault(p => p.GetType() == providerType);
 
@@ -78,49 +76,10 @@ public sealed class PriceSnapshotRefresher : BackgroundService
 
                 bool isMarketOpen = provider.IsMarketOpen();
 
-                if (!isFirstRun && !isMarketOpen)
-                {
-                    lock (CacheLock)
-                    {
-                        var currentSnapshot = _snapshotStore.Current;
-                        if (currentSnapshot != null)
-                        {
-                            var currentDict = currentSnapshot.Items.ToDictionary(p => p.ProductCode);
-                            bool snapshotModified = false;
-
-                            // [EDİT 2]: .ToList() eklendi. Koleksiyon döngü içinde değiştirilirken patlaması (InvalidOperationException) önlendi.
-                            var closedMarketItems = currentDict.Values
-                                .Where(v => v.Source == provider.ProviderName)
-                                .ToList();
-
-                            foreach (var item in closedMarketItems)
-                            {
-                                currentDict[item.ProductCode] = item with 
-                                { 
-                                    // [EDİT 3]: .AddSeconds(5) tolerans tamponu eklendi. Ağ gecikmesi hatası giderildi.
-                                    ValidUntilUtc = DateTimeOffset.UtcNow.Add(provider.RefreshInterval).AddSeconds(5),
-                                    IsMarketOpen = false
-                                }; 
-                                snapshotModified = true;
-                            }
-
-                            if (snapshotModified)
-                            {
-                                _snapshotStore.Set(new LatestPricesResponse(
-                                    Items: currentDict.Values.ToList(),
-                                    ComputedAtUtc: DateTimeOffset.UtcNow
-                                ));
-                            }
-                        }
-                    }
-
-                    _logger.LogDebug("[HEARTBEAT] Bumped validUntilUtc for closed market: {Provider}", provider.ProviderName);
-                    await Task.Delay(provider.RefreshInterval, stoppingToken);
-                    continue;
-                }
-
+                // Piyasa kapalıyken de provider kendi (genellikle daha uzun) RefreshInterval'ıyla
+                // yoklamaya devam eder, böylece AsOfUtc gerçek veriyle birlikte ilerler.
                 var rawPrices = await provider.GetMarketOverviewAsync(stoppingToken);
-                
+
                 if (rawPrices.Count > 0)
                 {
                     var verifiedPrices = await _priceProcessor.ProcessPricesAsync(rawPrices, provider.ProviderName, isMarketOpen, stoppingToken);
@@ -139,15 +98,12 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                         var currentDict = currentSnapshot?.Items.ToDictionary(p => p.ProductCode)
                                            ?? new Dictionary<string, LatestPriceResponse>();
 
-                        TimeSpan currentInterval = provider.RefreshInterval;
-
                         foreach (var newPrice in verifiedPrices)
                         {
-                            var safePrice = newPrice with 
+                            // ValidUntilUtc mapper'da zaten piyasa durumuna göre hesaplandı, dokunmuyoruz.
+                            var safePrice = newPrice with
                             {
-                                IsMarketOpen = isMarketOpen, 
-                                // [EDİT 3]: Normal döngüye de 5 saniyelik ağ gecikme toleransı eklendi.
-                                ValidUntilUtc = DateTimeOffset.UtcNow.Add(currentInterval).AddSeconds(5)
+                                IsMarketOpen = isMarketOpen
                             };
 
                             bool hasPriceChanged = true;
@@ -156,7 +112,7 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                             {
                                 if (existingPrice.Ask == safePrice.Ask && existingPrice.Bid == safePrice.Bid)
                                 {
-                                    hasPriceChanged = false; 
+                                    hasPriceChanged = false;
                                 }
                             }
 
@@ -178,7 +134,7 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                         }
 
                         _snapshotStore.Set(new LatestPricesResponse(
-                            Items: currentDict.Values.ToList(), 
+                            Items: currentDict.Values.ToList(),
                             ComputedAtUtc: DateTimeOffset.UtcNow
                         ));
                     }
@@ -187,20 +143,18 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                     {
                         await repository.AddPriceRecordsAsync(recordsToInsert, stoppingToken);
                     }
-
-                    isFirstRun = false; 
                 }
 
                 await Task.Delay(provider.RefreshInterval, stoppingToken);
             }
             catch (OperationCanceledException)
             {
-                break; 
+                break;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "A critical error occurred while fetching prices for provider {ProviderType}.", providerType.Name);
-                
+
                 string? fallbackProviderName = providerType.Name switch
                 {
                     "FreeCurrencyClient" => "YahooForexClient",
@@ -211,9 +165,9 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                 if (fallbackProviderName != null)
                 {
                     _logger.LogWarning("{Provider} failed! Triggering immediate fallback to {Fallback}...", providerType.Name, fallbackProviderName);
-                    
+
                     await _alertService.SendAlertAsync(
-                        $"🔄 *Fallback Activated*\n`{providerType.Name}` crashed. Routing traffic to `{fallbackProviderName}`.\nError: `{ex.Message}`", 
+                        $"🔄 *Fallback Activated*\n`{providerType.Name}` crashed. Routing traffic to `{fallbackProviderName}`.\nError: `{ex.Message}`",
                         $"Fallback_{providerType.Name}_{fallbackProviderName}",
                         stoppingToken);
 
@@ -230,7 +184,7 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                 else
                 {
                     await _alertService.SendAlertAsync(
-                        $"⚠️ *Provider Crashed: {providerType.Name}*\nTime: `{DateTime.UtcNow:HH:mm:ss} UTC`\nError: `{ex.Message}`", 
+                        $"⚠️ *Provider Crashed: {providerType.Name}*\nTime: `{DateTime.UtcNow:HH:mm:ss} UTC`\nError: `{ex.Message}`",
                         $"Snapshot_{providerType.Name}_{ex.GetType().Name}",
                         stoppingToken);
                 }
@@ -243,7 +197,7 @@ public sealed class PriceSnapshotRefresher : BackgroundService
     private async Task ExecuteFallbackAsync(string fallbackProviderName, CancellationToken stoppingToken)
     {
         using var fallbackScope = _scopeFactory.CreateScope();
-        
+
         var fallbackProvider = fallbackScope.ServiceProvider.GetServices<IPriceProvider>()
             .FirstOrDefault(p => p.GetType().Name == fallbackProviderName);
 
@@ -255,7 +209,7 @@ public sealed class PriceSnapshotRefresher : BackgroundService
         bool isMarketOpen = fallbackProvider.IsMarketOpen();
 
         var fallbackRawPrices = await fallbackProvider.GetMarketOverviewAsync(stoppingToken);
-        
+
         if (fallbackRawPrices.Count > 0)
         {
             var verifiedPrices = await _priceProcessor.ProcessPricesAsync(fallbackRawPrices, fallbackProvider.ProviderName, isMarketOpen, stoppingToken);
@@ -270,24 +224,21 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                     var currentDict = currentSnapshot?.Items.ToDictionary(p => p.ProductCode)
                                        ?? new Dictionary<string, LatestPriceResponse>();
 
-                    TimeSpan currentInterval = fallbackProvider.RefreshInterval;
-
                     foreach (var newPrice in verifiedPrices)
                     {
+                        // ValidUntilUtc mapper'da zaten piyasa durumuna göre hesaplandı, dokunmuyoruz.
                         var safePrice = newPrice with
                         {
-                            IsMarketOpen = isMarketOpen,
-                            // [EDİT 3]: Fallback akışına da 5 saniyelik ağ gecikme toleransı eklendi.
-                            ValidUntilUtc = DateTimeOffset.UtcNow.Add(currentInterval).AddSeconds(5)
+                            IsMarketOpen = isMarketOpen
                         };
-                        
+
                         bool hasPriceChanged = true;
 
                         if (currentDict.TryGetValue(safePrice.ProductCode, out var existingPrice))
                         {
                             if (existingPrice.Ask == safePrice.Ask && existingPrice.Bid == safePrice.Bid)
                             {
-                                hasPriceChanged = false; 
+                                hasPriceChanged = false;
                             }
                         }
 
@@ -309,7 +260,7 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                     }
 
                     _snapshotStore.Set(new LatestPricesResponse(
-                        Items: currentDict.Values.ToList(), 
+                        Items: currentDict.Values.ToList(),
                         ComputedAtUtc: DateTimeOffset.UtcNow
                     ));
                 }
@@ -318,7 +269,7 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                 {
                     await repository.AddPriceRecordsAsync(recordsToInsert, stoppingToken);
                 }
-                
+
                 _logger.LogInformation("Fallback to {FallbackProvider} completed successfully and data saved.", fallbackProviderName);
             }
         }
