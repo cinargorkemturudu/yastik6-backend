@@ -13,7 +13,7 @@ public abstract class BasePriceClient : IPriceProvider
 {
     protected readonly ILogger Logger;
     protected readonly AlertTracker Tracker;
-    protected readonly ISystemClock Clock; 
+    protected readonly ISystemClock Clock;
 
     protected BasePriceClient(ILogger logger, AlertTracker tracker, ISystemClock clock)
     {
@@ -23,11 +23,11 @@ public abstract class BasePriceClient : IPriceProvider
     }
 
     public abstract string ProviderName { get; }
-    
+
     public virtual bool IsMarketOpen() => true;
-    
+
     public abstract TimeSpan RefreshInterval { get; }
-    
+
     public virtual TimeSpan MarketCloseTime => TimeSpan.Zero;
 
     public async Task<List<LatestPriceResponse>> GetMarketOverviewAsync(CancellationToken ct = default)
@@ -38,11 +38,11 @@ public abstract class BasePriceClient : IPriceProvider
         var retryPolicy = Policy
             .Handle<Exception>()
             .WaitAndRetryAsync(
-                retryCount: 2, 
-                sleepDurationProvider: attempt => TimeSpan.FromSeconds(2 * attempt), 
-                onRetry: (exception, timeSpan, retryCount) => 
+                retryCount: 2,
+                sleepDurationProvider: attempt => TimeSpan.FromSeconds(2 * attempt),
+                onRetry: (exception, timeSpan, retryCount) =>
                 {
-                    Logger.LogWarning("{Provider} API geçici hata verdi ({Message}). {Delay} sn sonra tekrar deneniyor (Deneme: {RetryCount}).", 
+                    Logger.LogWarning("{Provider} API geçici hata verdi ({Message}). {Delay} sn sonra tekrar deneniyor (Deneme: {RetryCount}).",
                         ProviderName, exception.Message, timeSpan.TotalSeconds, retryCount);
                 });
 
@@ -57,39 +57,22 @@ public abstract class BasePriceClient : IPriceProvider
                 return new List<LatestPriceResponse>();
             }
 
-            if (Tracker.MarkAsResolved($"SYS_{ProviderName}_Api_Down") || 
+            if (Tracker.MarkAsResolved($"SYS_{ProviderName}_Api_Down") ||
                 Tracker.MarkAsResolved($"SYS_{ProviderName}_Empty_Data"))
             {
                 Logger.LogInformation("✅ {Provider} API bağlantısı tekrar kuruldu ve veri çekimi başarılı.", ProviderName);
             }
 
-            // --- İŞTE SİHİR BURADA BAŞLIYOR ---
-            
-            // 1. Provider'ın O ANKİ çalışma aralığını al (Açıksa 15sn, kapalıysa 30dk/24s vb.)
-            var currentInterval = RefreshInterval;
-            
-            // 2. Tolerans (Grace Period): Veri tam yenileneceği milisaniyede stale'e düşmesin diye 
-            // interval süresine %20 esneklik payı ekliyoruz. (Örn: 30dk ise 36dk geçerli sayılacak)
-            var gracePeriod = TimeSpan.FromSeconds(currentInterval.TotalSeconds * 0.2);
-            var validityDuration = currentInterval.Add(gracePeriod);
-            
-            var nowUtc = Clock.UtcNow;
-
-            // 3. Alt sınıfların (Mapper'ların) bastığı sahte/yanlış ValidUntilUtc değerlerini acımasızca EZ.
-            // Verinin ömrünü doğrudan Provider'ın kendi nabzına (Interval) bağla.
-            var definitiveResults = results.Select(r => r with 
-            {
-                ValidUntilUtc = nowUtc.Add(validityDuration)
-            }).ToList();
-
-            return definitiveResults;
+            // Mapper'ların hesapladığı ValidUntilUtc (piyasa açık/kapalı, hafta sonu vb. duruma göre
+            // özel olarak ayarlanmış) burada bozulmadan döner; artık tek bir yerde hesaplanıyor.
+            return results;
         }
         catch (Exception ex)
         {
             Logger.LogError(ex, "{Provider} üzerinden veri çekilirken kalıcı hata oluştu.", ProviderName);
             Tracker.ShouldSendAlert($"SYS_{ProviderName}_Api_Down");
-            
-            return new List<LatestPriceResponse>(); 
+
+            return new List<LatestPriceResponse>();
         }
     }
 
