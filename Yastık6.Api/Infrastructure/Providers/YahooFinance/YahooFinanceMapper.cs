@@ -51,11 +51,11 @@ public static class YahooFinanceMapper
 
     public static LatestPriceResponse? MapToResponse(string symbolCode, Security security, string symbolType, string providerName)
     {
-        if (!security.Fields.ContainsKey("RegularMarketPrice")) 
+        if (!security.Fields.ContainsKey("RegularMarketPrice"))
         {
             return null; // Eğer fiyat verisi hiç yoksa, sistemi patlatmadan nazikçe atla
         }
-        
+
         decimal marketPrice = (decimal)security.RegularMarketPrice;
         if (marketPrice == 0) return null;
 
@@ -90,7 +90,7 @@ public static class YahooFinanceMapper
 
         string format = finalType == "CURRENCY" ? "N4" : "N2";
         var asOfUtc = DateTimeOffset.UtcNow;
-        
+
         DateTimeOffset validUntilUtc;
         var nowUtc = DateTimeOffset.UtcNow;
         var nowTr = nowUtc.AddHours(3);
@@ -101,11 +101,11 @@ public static class YahooFinanceMapper
         }
         else if (finalType == "CURRENCY")
         {
-            bool isForexWeekend = nowUtc.DayOfWeek == DayOfWeek.Saturday || 
+            bool isForexWeekend = nowUtc.DayOfWeek == DayOfWeek.Saturday ||
                                   (nowUtc.DayOfWeek == DayOfWeek.Sunday && nowUtc.Hour < 21);
-            
-            validUntilUtc = isForexWeekend 
-                ? nowUtc.AddDays(1) 
+
+            validUntilUtc = isForexWeekend
+                ? nowUtc.AddDays(1)
                 : nowUtc.AddMinutes(5);
         }
         else // STOCK (BIST)
@@ -121,18 +121,25 @@ public static class YahooFinanceMapper
             }
         }
         string realName = GetPrettyName(symbolCode); // Varsayılan olarak eski "Thyao" mantığını al
-        
-        // Eğer Yahoo bize gerçek ve uzun şirket adını (LongName) verdiyse, onu ezerek kullan
-        if (security.Fields.ContainsKey("LongName") && security.Fields["LongName"] != null)
+
+        // Yahoo'nun ShortName/LongName alanları sadece hisseler için güvenilir gerçek isim taşır;
+        // döviz/kripto için curated pretty-name (yukarıdaki overrides) kullanılır, aksi halde
+        // "USD/TRY" veya "Bitcoin USD" gibi ham Yahoo isimleri döner.
+        if (finalType == "STOCK")
         {
-            realName = security.Fields["LongName"].ToString();
+            // Eğer Yahoo bize gerçek ve uzun şirket adını (LongName) verdiyse, onu ezerek kullan
+            if (security.Fields.ContainsKey("LongName") && security.Fields["LongName"] != null)
+            {
+                realName = security.Fields["LongName"].ToString()!;
+            }
+            // Uzun adı yoksa ama kısa şirket adı (ShortName) varsa, TitleCase'e çevirip kullan
+            else if (security.Fields.ContainsKey("ShortName") && security.Fields["ShortName"] != null)
+            {
+                var textInfo = new CultureInfo("tr-TR").TextInfo;
+                realName = textInfo.ToTitleCase(security.Fields["ShortName"].ToString()!.ToLower());
+            }
         }
-        // Uzun adı yoksa ama kısa şirket adı (ShortName) varsa onu kullan
-        else if (security.Fields.ContainsKey("ShortName") && security.Fields["ShortName"] != null)
-        {
-            realName = security.Fields["ShortName"].ToString();
-        }
-        
+
         decimal changeRate = 0m;
 
         if (security.Fields.TryGetValue("RegularMarketChangePercent", out var changePctObj) && changePctObj != null)

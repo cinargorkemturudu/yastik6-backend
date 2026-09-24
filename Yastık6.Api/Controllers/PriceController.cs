@@ -1,5 +1,6 @@
 using FluentValidation;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Hosting;
 using Yastık6.Api.Application.Features.Prices;
 using Yastık6.Api.Domain.Entities;
 using Yastık6.Api.Infrastructure.Caching;
@@ -13,11 +14,13 @@ public sealed class PricesController : ControllerBase
 {
     private readonly IPriceService _ps;
     private readonly IPriceSnapshotStore _store;
+    private readonly IHostEnvironment _env;
 
-    public PricesController(IPriceService ps, IPriceSnapshotStore store)
+    public PricesController(IPriceService ps, IPriceSnapshotStore store, IHostEnvironment env)
     {
         _ps = ps;
-        _store = store; 
+        _store = store;
+        _env = env;
     }
 
     [HttpGet("market")]
@@ -26,9 +29,9 @@ public sealed class PricesController : ControllerBase
         // The background worker constantly updates _store.Current.
         // If the application just started and the cache is temporarily empty, return an empty array instantly.
         var cachedData = _store.Current ?? new LatestPricesResponse(
-            Items: Array.Empty<LatestPriceResponse>(), 
+            Items: Array.Empty<LatestPriceResponse>(),
             ComputedAtUtc: DateTimeOffset.UtcNow
-        );        
+        );
         return Ok(cachedData);
     }
 
@@ -36,11 +39,11 @@ public sealed class PricesController : ControllerBase
     public async Task<ActionResult<PriceHistoryResponse>> GetHistory(
         string productCode,
         [FromQuery] PriceHistoryRange range,
-        [FromServices] IValidator<(string, PriceHistoryRange)> validator, 
+        [FromServices] IValidator<(string, PriceHistoryRange)> validator,
         CancellationToken ct)
     {
         var validationResult = await validator.ValidateAsync((productCode, range), ct);
-    
+
         if (!validationResult.IsValid)
         {
             return BadRequest(validationResult.Errors);
@@ -49,10 +52,15 @@ public sealed class PricesController : ControllerBase
         var result = await _ps.GetHistoryAsync(productCode, range, ct);
         return Ok(result);
     }
-    
+
     [HttpPost("seed-test-data")]
     public async Task<IActionResult> SeedTestData([FromServices] ApplicationDbContext dbContext)
     {
+        if (!_env.IsDevelopment())
+        {
+            return NotFound();
+        }
+
         var records = new List<PriceRecord>();
         var random = new Random();
         var basePrice = 7400m; // Fake initial price for Gram Gold
@@ -62,12 +70,12 @@ public sealed class PricesController : ControllerBase
         for (int i = 0; i <= 365; i++)
         {
             var fakeDate = now.AddDays(-i);
-            
+
             // Add a random volatility fluctuation between -1% and +1% for each day
             var fluctuation = (decimal)(random.NextDouble() * 0.02 - 0.01);
             basePrice = basePrice + (basePrice * fluctuation);
 
-            
+
             records.Add(new PriceRecord
             {
                 Id = Guid.NewGuid(),
