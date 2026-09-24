@@ -7,13 +7,9 @@ stages:
   jobs:
   - job: DotnetTest
     pool:
-      vmImage: 'ubuntu-latest'
+      name: 'yastik6'
+    container: mcr.microsoft.com/dotnet/sdk:10.0.100
     steps:
-    - task: UseDotNet@2
-      displayName: 'Install .NET SDK'
-      inputs:
-        packageType: 'sdk'
-        version: '10.0.x'
     - script: dotnet test Yastik6.Backend.sln --configuration Release
       displayName: 'dotnet test'
 
