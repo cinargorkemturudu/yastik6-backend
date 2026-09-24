@@ -1,18 +1,39 @@
 trigger:
 - main
 
-pool:
-  name: 'yastik6'
+stages:
+- stage: Test
+  displayName: 'Run backend test suite'
+  jobs:
+  - job: DotnetTest
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: UseDotNet@2
+      displayName: 'Install .NET SDK'
+      inputs:
+        packageType: 'sdk'
+        version: '10.0.x'
+    - script: dotnet test Yastik6.Backend.sln --configuration Release
+      displayName: 'dotnet test'
 
-steps:
-- task: SSH@0
-  displayName: 'Sunucuda Kodu Güncelle ve Yeniden Başlat'
-  inputs:
-    sshEndpoint: 'Oracle-Server-Service-Connection'
-    runOptions: 'inline'
-    inline: |
-      set -e
-      cd ~/Isolated-Backend-Yastik6
-      git pull 2>&1
-      sudo docker compose down 2>&1
-      sudo docker compose up -d --build 2>&1
+- stage: Deploy
+  displayName: 'Deploy to production'
+  dependsOn: Test
+  condition: succeeded()
+  jobs:
+  - job: SSHDeploy
+    pool:
+      name: 'yastik6'
+    steps:
+    - task: SSH@0
+      displayName: 'Sunucuda Kodu Güncelle ve Yeniden Başlat'
+      inputs:
+        sshEndpoint: 'Oracle-Server-Service-Connection'
+        runOptions: 'inline'
+        inline: |
+          set -e
+          cd ~/Isolated-Backend-Yastik6
+          git pull 2>&1
+          sudo docker compose down 2>&1
+          sudo docker compose up -d --build 2>&1

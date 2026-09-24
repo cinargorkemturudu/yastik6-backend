@@ -12,21 +12,21 @@ public static class HaremDataMapper
     {
         { "GRAM ALTIN", ("METAL", "GRAM_ALTIN", "Gram Altın") },
         { "Has Altın", ("METAL", "HAS_ALTIN", "Has Altın") },
-        { "GÜMÜŞ TL", ("METAL", "GUMUS_TL", "Gümüş (TL)") },     
-        { "22 AYAR", ("METAL", "AYAR_22", "22 Ayar Altın") },       
-        { "14 AYAR", ("METAL", "AYAR_14", "14 Ayar Altın") },      
-        { "YENİ ÇEYREK", ("METAL", "YENI_CEYREK", "Yeni Çeyrek") }, 
-        { "ESKİ ÇEYREK", ("METAL", "ESKI_CEYREK", "Eski Çeyrek") }, 
-        { "YENİ YARIM", ("METAL", "YENI_YARIM", "Yeni Yarım") },   
-        { "ESKİ YARIM", ("METAL", "ESKI_YARIM", "Eski Yarım") },  
-        { "YENİ TAM", ("METAL", "YENI_TAM", "Yeni Tam") },     
-        { "ESKİ TAM", ("METAL", "ESKI_TAM", "Eski Tam") },      
-        { "YENİ ATA", ("METAL", "YENI_ATA", "Yeni Ata") },       
-        { "ESKİ ATA", ("METAL", "ESKI_ATA", "Eski Ata") },       
-        { "YENİ GREMSE", ("METAL", "YENI_GREMSE", "Yeni Gremse") }, 
-        { "ESKİ GREMSE", ("METAL", "ESKI_GREMSE", "Eski Gremse") }, 
+        { "GÜMÜŞ TL", ("METAL", "GUMUS_TL", "Gümüş (TL)") },
+        { "22 AYAR", ("METAL", "AYAR_22", "22 Ayar Altın (Gram)") },
+        { "14 AYAR", ("METAL", "AYAR_14", "14 Ayar Altın") },
+        { "YENİ ÇEYREK", ("METAL", "YENI_CEYREK", "Çeyrek Altın (Yeni)") },
+        { "ESKİ ÇEYREK", ("METAL", "ESKI_CEYREK", "Çeyrek Altın (Eski)") },
+        { "YENİ YARIM", ("METAL", "YENI_YARIM", "Yeni Yarım") },
+        { "ESKİ YARIM", ("METAL", "ESKI_YARIM", "Eski Yarım") },
+        { "YENİ TAM", ("METAL", "YENI_TAM", "Yeni Tam") },
+        { "ESKİ TAM", ("METAL", "ESKI_TAM", "Eski Tam") },
+        { "YENİ ATA", ("METAL", "YENI_ATA", "Yeni Ata") },
+        { "ESKİ ATA", ("METAL", "ESKI_ATA", "Eski Ata") },
+        { "YENİ GREMSE", ("METAL", "YENI_GREMSE", "Yeni Gremse") },
+        { "ESKİ GREMSE", ("METAL", "ESKI_GREMSE", "Eski Gremse") },
         { "ONS", ("INDICATOR", "ONS", "Ons Altın ($)") },
-        { "GÜMÜŞ ONS", ("INDICATOR", "GUMUS_ONS", "Gümüş Ons ($)") }  
+        { "GÜMÜŞ ONS", ("INDICATOR", "GUMUS_ONS", "Gümüş Ons ($)") }
     };
 
     public static LatestPriceResponse? MapToResponse(HaremClient.HaremItemRaw item)
@@ -44,15 +44,15 @@ public static class HaremDataMapper
 
         var discoveryCode = assetInfo.TargetCode;
         var assetType = assetInfo.Type;
-        var prettyName = assetInfo.PrettyName; 
-        
+        var prettyName = assetInfo.PrettyName;
+
         string formattedBid = bid.ToString("N2", CultureInfo.InvariantCulture);
         string formattedAsk = ask.ToString("N2", CultureInfo.InvariantCulture);
 
         var asOfUtc = ParseTurkishDate(item.LastUpdate);
-        var nowTr = DateTimeOffset.UtcNow.AddHours(3); 
+        var nowTr = DateTimeOffset.UtcNow.AddHours(3);
         bool isWeekendTr = nowTr.DayOfWeek == DayOfWeek.Saturday || nowTr.DayOfWeek == DayOfWeek.Sunday;
-        
+
         DateTimeOffset validUntilUtc;
         if (!isWeekendTr && nowTr.Hour >= 8 && nowTr.Hour < 18)
         {
@@ -65,12 +65,12 @@ public static class HaremDataMapper
 
         return new LatestPriceResponse(
             ProductCode: discoveryCode,
-            Name: prettyName, 
+            Name: prettyName,
             Type: assetType,
             Bid: bid,
             Ask: ask,
             LastPrice: null,
-            ChangeRate: 0m, 
+            ChangeRate: 0m,
             FormattedBid: formattedBid,
             FormattedAsk: formattedAsk,
             AsOfUtc: asOfUtc,
@@ -81,12 +81,12 @@ public static class HaremDataMapper
 
     // [DÜZELTME 2]: Akıllı Fiyat Ayrıştırıcı
     // [DÜZELTME 2]: Akıllı Fiyat Ayrıştırıcı
-// [DÜZELTME 2]: Akıllı Fiyat Ayrıştırıcı
+    // [DÜZELTME 2]: Akıllı Fiyat Ayrıştırıcı
     private static bool TryParseTurkishMoney(string? raw, out decimal value)
     {
         value = 0;
         if (string.IsNullOrWhiteSpace(raw)) return false;
-        
+
         raw = raw.Trim();
 
         int lastComma = raw.LastIndexOf(',');
@@ -98,13 +98,13 @@ public static class HaremDataMapper
             if (lastDot > lastComma)
             {
                 // Format: 2,500.50 (Uluslararası) -> Virgülü sil, Invariant ile oku
-                var sanitized = raw.Replace(",", ""); 
+                var sanitized = raw.Replace(",", "");
                 return decimal.TryParse(sanitized, NumberStyles.Any, CultureInfo.InvariantCulture, out value);
             }
             else
             {
                 // Format: 2.500,50 (Türkçe) -> Noktayı sil, TrCulture ile oku
-                var sanitized = raw.Replace(".", ""); 
+                var sanitized = raw.Replace(".", "");
                 return decimal.TryParse(sanitized, NumberStyles.Any, TrCulture, out value);
             }
         }
@@ -117,7 +117,7 @@ public static class HaremDataMapper
         // Türk sisteminde bu ondalık değil binliktir (2.5 Lira değil, 2500 Liradır). Noktayı yokedip okuyoruz.
         else if (lastDot > -1)
         {
-            var sanitized = raw.Replace(".", ""); 
+            var sanitized = raw.Replace(".", "");
             return decimal.TryParse(sanitized, NumberStyles.Any, CultureInfo.InvariantCulture, out value);
         }
         // Durum 4: Hiçbiri yok (Örn: 2500) -> Dümdüz oku
