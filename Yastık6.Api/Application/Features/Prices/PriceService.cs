@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.Caching.Memory;
 using Yastık6.Api.Application.Common.Interfaces;
 
@@ -5,21 +6,24 @@ namespace Yastık6.Api.Application.Features.Prices;
 
 public sealed class PriceService : IPriceService
 {
-    private readonly IPriceHistoryRepository _repository; 
+    private readonly IPriceHistoryRepository _repository;
     private readonly ISystemClock _clock;
     private readonly IMemoryCache _cache;
-    
+    private readonly ILogger<PriceService> _logger;
+
     // Thundering Herd (Sürü Psikolojisi) önlemi için kilit mekanizması
     private static readonly SemaphoreSlim _cacheLock = new SemaphoreSlim(1, 1);
 
     public PriceService(
-        IPriceHistoryRepository repository, 
+        IPriceHistoryRepository repository,
         ISystemClock clock,
-        IMemoryCache cache) 
+        IMemoryCache cache,
+        ILogger<PriceService> logger)
     {
-        _repository = repository; 
-        _clock = clock; 
+        _repository = repository;
+        _clock = clock;
         _cache = cache;
+        _logger = logger;
     }
 
     public async Task<PriceHistoryResponse> GetHistoryAsync(
@@ -32,6 +36,9 @@ public sealed class PriceService : IPriceService
         // 1. Önbellekte (Cache) varsa direkt dön
         if (!_cache.TryGetValue(cacheKey, out IReadOnlyList<PricePointDto>? points))
         {
+            _logger.LogInformation("History cache miss for {ProductCode} ({Range}), querying repository", productCode, range);
+            var stopwatch = Stopwatch.StartNew();
+
             // 2. Kilit: Aynı anda sadece 1 istek veritabanına inebilir
             await _cacheLock.WaitAsync(ct);
             try
@@ -42,13 +49,13 @@ public sealed class PriceService : IPriceService
                     var since = CalculateSinceDate(range);
                     var bucketSize = GetBucketResolution(range);
                     var now = _clock.UtcNow;
-            
+
                     // 1. Veritabanından mevcut (seyrek/sparse) veriyi çek
                     var rawPoints = await _repository.GetBucketedHistoryAsync(productCode, since, bucketSize, ct);
-                    
+
                     // 2. LOCF algoritmasının referans alacağı 'Çapa' noktasını geçmişten çek
                     var anchorPoint = await _repository.GetLastPriceBeforeAsync(productCode, since, ct);
-                    
+
                     // 3. LOCF (Fill-Forward) algoritmasını uygulayarak boşlukları doldur
                     points = ApplyFillForward(rawPoints, anchorPoint, since, now, bucketSize);
 
@@ -57,12 +64,20 @@ public sealed class PriceService : IPriceService
                         AbsoluteExpirationRelativeToNow = GetCacheDuration(range)
                     };
                     _cache.Set(cacheKey, points, cacheOptions);
+
+                    stopwatch.Stop();
+                    _logger.LogInformation("History computed for {ProductCode} ({Range}): {PointCount} points, DurationMs={DurationMs}",
+                        productCode, range, points.Count, stopwatch.ElapsedMilliseconds);
                 }
             }
             finally
             {
                 _cacheLock.Release();
             }
+        }
+        else
+        {
+            _logger.LogInformation("History cache hit for {ProductCode} ({Range})", productCode, range);
         }
 
         return new PriceHistoryResponse(
@@ -83,14 +98,14 @@ public sealed class PriceService : IPriceService
     {
         var densePoints = new List<PricePointDto>();
         var currentBucket = since;
-        
+
         // [MİMARİ DÜZELTME 1]: lastKnownPrice artık Nullable (decimal?).
         // Eski koddaki "anchor yoksa rawPoints[0]'ı al" mantığını (Backfill) TAMAMEN SİLDİK.
         // Sadece geçmişte KESİN olarak bildiğimiz bir çapa (anchor) varsa başlatıyoruz.
         decimal? lastKnownPrice = anchorPoint?.Price;
 
         int i = 0;
-        
+
         // İstenen bitiş zamanına (Şu an) kadar kovaları adım adım ilerlet
         while (currentBucket <= until)
         {
@@ -101,7 +116,7 @@ public sealed class PriceService : IPriceService
                 lastKnownPrice = rawPoints[i].Price;
                 i++;
             }
-            
+
             // [MİMARİ DÜZELTME 2]: Noktayı sadece elimizde gerçekliğinden emin olduğumuz bir fiyat varsa çiz.
             // Eğer lastKnownPrice hala null ise (henüz o tarihlerde sistemde veri toplanmamışsa), 
             // sessizce pas geç ve grafiği boş bırak. Asla geleceği geçmişe kopyalama.
@@ -109,7 +124,7 @@ public sealed class PriceService : IPriceService
             {
                 densePoints.Add(new PricePointDto(currentBucket, lastKnownPrice.Value));
             }
-            
+
             // Bir sonraki kovaya (bucket) geç
             currentBucket = currentBucket.Add(bucketSize);
         }
