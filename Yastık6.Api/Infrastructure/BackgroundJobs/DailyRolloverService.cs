@@ -21,7 +21,7 @@ public sealed class DailyRolloverService : BackgroundService
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("DailyRolloverService başlatıldı. Sağlayıcı gün dönümü görevleri ayarlanıyor...");
+        _logger.LogInformation("DailyRolloverService started. Setting up provider daily rollover tasks...");
 
         List<Type> providerTypes;
         using (var scope = _scopeFactory.CreateScope())
@@ -31,7 +31,7 @@ public sealed class DailyRolloverService : BackgroundService
         }
 
         var tasks = providerTypes.Select(type => RunProviderCloseTaskAsync(type, stoppingToken));
-        
+
         return Task.WhenAll(tasks);
     }
 
@@ -52,19 +52,19 @@ public sealed class DailyRolloverService : BackgroundService
                 using (var loopScope = _scopeFactory.CreateScope())
                 {
                     var provider = (IPriceProvider)loopScope.ServiceProvider.GetServices<IPriceProvider>().First(p => p.GetType() == providerType);
-                    
+
                     var now = DateTime.Now;
                     var closeTimeToday = now.Date.Add(provider.MarketCloseTime);
-                    
-                    var nextCloseTime = now >= closeTimeToday 
-                        ? closeTimeToday.AddDays(1) 
+
+                    var nextCloseTime = now >= closeTimeToday
+                        ? closeTimeToday.AddDays(1)
                         : closeTimeToday;
 
                     timeUntilClose = nextCloseTime - now;
 
                     _logger.LogInformation(
-                        "[{Provider}] Kapanış fiyatları senkronize edildi. Bir sonraki gün dönümü {Delay} saat sonra ({NextClose}).", 
-                        provider.ProviderName, 
+                        "[{Provider}] Closing prices synchronized. Next rollover in {Delay} hours ({NextClose}).",
+                        provider.ProviderName,
                         Math.Round(timeUntilClose.TotalHours, 1),
                         nextCloseTime.ToString("HH:mm"));
                 }
@@ -83,14 +83,14 @@ public sealed class DailyRolloverService : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogCritical(ex, "Gün dönümü servisi çalışırken hata oluştu!");
-                
+                _logger.LogCritical(ex, "Error occurred while running the daily rollover service!");
+
                 // [DÜZELTİLDİ]: Araya sekreterin istediği o çelik parmak izini (CacheKey) ekledik!
                 await _alertService.SendAlertAsync(
-                    $"💀 *KRİTİK HATA: Gün Dönümü (Rollover)*\nGece kapanış fiyatları senkronize edilemedi! Yarınki % kâr/zarar oranları hatalı olabilir.\nHata: `{ex.Message}`", 
+                    $"💀 *KRİTİK HATA: Gün Dönümü (Rollover)*\nGece kapanış fiyatları senkronize edilemedi! Yarınki % kâr/zarar oranları hatalı olabilir.\nHata: `{ex.Message}`",
                     ex.GetType().Name, // <- İŞTE EKSİK OLAN PARÇA BURASIYDI
                     stoppingToken);
-                
+
                 await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken);
             }
         }
@@ -100,7 +100,7 @@ public sealed class DailyRolloverService : BackgroundService
     {
         var repository = scope.ServiceProvider.GetRequiredService<IPriceHistoryRepository>();
         var store = scope.ServiceProvider.GetRequiredService<IPreviousCloseStore>();
-        
+
         var now = DateTime.Now;
         var closeTimeToday = now.Date.Add(provider.MarketCloseTime);
         var cutoffLocal = now > closeTimeToday ? closeTimeToday : closeTimeToday.AddDays(-1);

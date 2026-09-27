@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Polly;
 using Yastık6.Api.Application.Common.Interfaces;
 using Yastık6.Api.Application.Features.Prices;
@@ -40,19 +41,23 @@ public abstract class BasePriceClient : IPriceProvider
             .WaitAndRetryAsync(
                 retryCount: 2,
                 sleepDurationProvider: attempt => TimeSpan.FromSeconds(2 * attempt),
-                onRetry: (exception, timeSpan, retryCount) =>
+                onRetry: (Exception exception, TimeSpan timeSpan, int retryCount, Context context) =>
                 {
-                    Logger.LogWarning("{Provider} API geçici hata verdi ({Message}). {Delay} sn sonra tekrar deneniyor (Deneme: {RetryCount}).",
+                    Logger.LogWarning("{Provider} API returned a transient error ({Message}). Retrying in {Delay}s (attempt {RetryCount}).",
                         ProviderName, exception.Message, timeSpan.TotalSeconds, retryCount);
                 });
+
+        var stopwatch = Stopwatch.StartNew();
 
         try
         {
             var results = await retryPolicy.ExecuteAsync(() => FetchDataAsync(ct));
+            stopwatch.Stop();
 
             if (results == null || !results.Any())
             {
-                Logger.LogWarning("{Provider} API'den boş veri döndü.", ProviderName);
+                Logger.LogWarning("{Provider} API returned no data. Success={Success} ItemCount={ItemCount} DurationMs={DurationMs}",
+                    ProviderName, false, 0, stopwatch.ElapsedMilliseconds);
                 Tracker.ShouldSendAlert($"SYS_{ProviderName}_Empty_Data");
                 return new List<LatestPriceResponse>();
             }
@@ -60,8 +65,11 @@ public abstract class BasePriceClient : IPriceProvider
             if (Tracker.MarkAsResolved($"SYS_{ProviderName}_Api_Down") ||
                 Tracker.MarkAsResolved($"SYS_{ProviderName}_Empty_Data"))
             {
-                Logger.LogInformation("✅ {Provider} API bağlantısı tekrar kuruldu ve veri çekimi başarılı.", ProviderName);
+                Logger.LogInformation("{Provider} API connection restored, fetch succeeded.", ProviderName);
             }
+
+            Logger.LogInformation("{Provider} fetch succeeded. Success={Success} ItemCount={ItemCount} DurationMs={DurationMs}",
+                ProviderName, true, results.Count, stopwatch.ElapsedMilliseconds);
 
             // Mapper'ların hesapladığı ValidUntilUtc (piyasa açık/kapalı, hafta sonu vb. duruma göre
             // özel olarak ayarlanmış) burada bozulmadan döner; artık tek bir yerde hesaplanıyor.
@@ -69,7 +77,9 @@ public abstract class BasePriceClient : IPriceProvider
         }
         catch (Exception ex)
         {
-            Logger.LogError(ex, "{Provider} üzerinden veri çekilirken kalıcı hata oluştu.", ProviderName);
+            stopwatch.Stop();
+            Logger.LogError(ex, "{Provider} fetch failed permanently. Success={Success} DurationMs={DurationMs}",
+                ProviderName, false, stopwatch.ElapsedMilliseconds);
             Tracker.ShouldSendAlert($"SYS_{ProviderName}_Api_Down");
 
             return new List<LatestPriceResponse>();

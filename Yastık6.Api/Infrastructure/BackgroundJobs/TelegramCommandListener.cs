@@ -36,12 +36,12 @@ public sealed class TelegramCommandListener : BackgroundService
     {
         if (string.IsNullOrWhiteSpace(_botToken) || string.IsNullOrWhiteSpace(_expectedChatId))
         {
-            _logger.LogWarning("Telegram Listener başlatılamadı: Token veya ChatId eksik.");
+            _logger.LogWarning("Telegram Listener could not start: Token or ChatId is missing.");
             return;
         }
 
-        _logger.LogInformation("📻 Telsiz Operatörü (Command Listener) frekansı dinlemeye başladı.");
-        
+        _logger.LogInformation("Command Listener started listening for Telegram commands.");
+
         long offset = 0;
 
         while (!stoppingToken.IsCancellationRequested)
@@ -49,7 +49,7 @@ public sealed class TelegramCommandListener : BackgroundService
             try
             {
                 var url = $"https://api.telegram.org/bot{_botToken}/getUpdates?offset={offset}&timeout=30";
-                
+
                 var response = await _httpClient.GetAsync(url, stoppingToken);
                 if (!response.IsSuccessStatusCode)
                 {
@@ -80,12 +80,12 @@ public sealed class TelegramCommandListener : BackgroundService
 
                             if (chatId == _expectedChatId && text?.Trim().ToLower() == "/rapor")
                             {
-                                _logger.LogInformation("Patrondan /rapor komutu alındı. Anlık durum iletiliyor...");
+                                _logger.LogInformation("Received /rapor command from owner. Sending current status...");
                                 await SendSnapshotReportAsync(stoppingToken);
                             }
                             else if (chatId != _expectedChatId)
                             {
-                                _logger.LogWarning("🚨 Tanımlanmayan bir kaynaktan bota mesaj geldi! ChatId: {ChatId}, Metin: {Text}", chatId, text);
+                                _logger.LogWarning("Message received from an unrecognized source! ChatId: {ChatId}, Text: {Text}", chatId, text);
                             }
                         }
                     }
@@ -97,7 +97,7 @@ public sealed class TelegramCommandListener : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Telsiz Operatörü Telegram'ı dinlerken takıldı.");
+                _logger.LogError(ex, "Command Listener choked while listening to Telegram.");
                 await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
             }
         }
@@ -137,7 +137,7 @@ public sealed class TelegramCommandListener : BackgroundService
             {
                 reportBuilder.AppendLine($"- `{item.Key}` : {item.Value} kez patladı.");
             }
-            
+
             if (dataErrors.Count > 40) reportBuilder.AppendLine($"_...ve listelenmeyen {dataErrors.Count - 40} asset daha._");
             reportBuilder.AppendLine();
         }
@@ -150,7 +150,7 @@ public sealed class TelegramCommandListener : BackgroundService
             {
                 reportBuilder.AppendLine($"- `{item.Key}` : {item.Value} hatadan sonra düzeldi.");
             }
-            
+
             if (resolved.Count > 40) reportBuilder.AppendLine($"_...ve listelenmeyen {resolved.Count - 40} asset daha._");
             reportBuilder.AppendLine();
         }

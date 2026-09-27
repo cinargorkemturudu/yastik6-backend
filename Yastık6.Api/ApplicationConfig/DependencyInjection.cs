@@ -1,18 +1,18 @@
 using FluentValidation;
-using Microsoft.EntityFrameworkCore; 
-using Polly; 
+using Microsoft.EntityFrameworkCore;
+using Polly;
 using Polly.Extensions.Http;
 using Yastık6.Api.Application.Common.Interfaces;
 using Yastık6.Api.Application.Features.Prices;
 using Yastık6.Api.Infrastructure.BackgroundJobs;
 using Yastık6.Api.Infrastructure.Caching;
-using Yastık6.Api.Infrastructure.Persistence; 
-using Yastık6.Api.Infrastructure.Persistence.Repositories; 
+using Yastık6.Api.Infrastructure.Persistence;
+using Yastık6.Api.Infrastructure.Persistence.Repositories;
 using Yastık6.Api.Infrastructure.Providers.Harem;
-using Yastık6.Api.Infrastructure.Providers.YahooFinance; 
-using Yastık6.Api.Infrastructure.Providers.Binance; 
-using Yastık6.Api.Infrastructure.Providers.FreeCurrency; 
-using Yastık6.Api.Infrastructure.Alerts; 
+using Yastık6.Api.Infrastructure.Providers.YahooFinance;
+using Yastık6.Api.Infrastructure.Providers.Binance;
+using Yastık6.Api.Infrastructure.Providers.FreeCurrency;
+using Yastık6.Api.Infrastructure.Alerts;
 using Yastık6.Api.Infrastructure.Time;
 
 namespace Yastık6.Api.ApplicationConfig;
@@ -24,9 +24,9 @@ public static class DependencyInjection
         IConfiguration configuration)
     {
         services.AddMemoryCache();
-        
+
         services.AddSingleton<ISystemClock, SystemClock>();
-        services.AddSingleton<AlertTracker>(); 
+        services.AddSingleton<AlertTracker>();
 
         var dbPath = configuration["Database:ConnectionString"] ?? "Data Source=yastik.db";
         services.AddDbContext<ApplicationDbContext>(options => options.UseSqlite(dbPath));
@@ -36,12 +36,12 @@ public static class DependencyInjection
         services.AddScoped<IValidator<(string productCode, PriceHistoryRange range)>, GetHistoryValidator>();
 
         services.AddSingleton<IPriceSnapshotStore, PriceSnapshotStore>();
-        
+
         services.AddSingleton<PriceShieldValidator>();
         services.AddSingleton<IPriceProcessor, PriceProcessor>();
 
         services.AddHostedService<PriceSnapshotRefresher>();
-        
+
         // --- WATCHDOG (TELEGRAM ALARM) CONFIGURATION ---
         services.AddHttpClient<IAlertService, TelegramAlertService>(client =>
         {
@@ -74,11 +74,11 @@ public static class DependencyInjection
                 return HttpPolicyExtensions
                     .HandleTransientHttpError()
                     .WaitAndRetryAsync(
-                        retryCount: 3, 
+                        retryCount: 3,
                         sleepDurationProvider: attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)) + TimeSpan.FromMilliseconds(Random.Shared.Next(0, 1000)),
                         onRetry: (outcome, timespan, retryAttempt, context) =>
                         {
-                            logger.LogWarning("Harem API geçici hata verdi ({ErrorMessage}). {DelaySeconds:F1} sn sonra tekrar deneniyor (Deneme: {RetryCount}).",
+                            logger.LogWarning("Harem API returned a transient error ({ErrorMessage}). Retrying in {DelaySeconds:F1}s (attempt {RetryCount}).",
                                 outcome.Exception?.Message ?? $"HTTP {(int?)outcome.Result?.StatusCode}",
                                 timespan.TotalSeconds,
                                 retryAttempt);
@@ -86,7 +86,7 @@ public static class DependencyInjection
             });
 
         services.AddTransient<IPriceProvider>(sp => sp.GetRequiredService<HaremClient>());
-        
+
         // --- BINANCE CLIENT CONFIGURATION ---
         services.AddHttpClient<BinanceClient>(client =>
         {
@@ -99,11 +99,11 @@ public static class DependencyInjection
             return HttpPolicyExtensions
                 .HandleTransientHttpError()
                 .WaitAndRetryAsync(
-                    retryCount: 3, 
+                    retryCount: 3,
                     sleepDurationProvider: attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)) + TimeSpan.FromMilliseconds(Random.Shared.Next(0, 1000)),
                     onRetry: (outcome, timespan, retryAttempt, context) =>
                     {
-                        logger.LogWarning("Binance API geçici hata verdi ({ErrorMessage}). {DelaySeconds:F1} sn sonra tekrar deneniyor (Deneme: {RetryCount}).",
+                        logger.LogWarning("Binance API returned a transient error ({ErrorMessage}). Retrying in {DelaySeconds:F1}s (attempt {RetryCount}).",
                             outcome.Exception?.Message ?? $"HTTP {(int?)outcome.Result?.StatusCode}",
                             timespan.TotalSeconds,
                             retryAttempt);
@@ -130,12 +130,12 @@ public static class DependencyInjection
             return HttpPolicyExtensions
                 .HandleTransientHttpError()
                 .WaitAndRetryAsync(
-                    retryCount: 3, 
+                    retryCount: 3,
                     sleepDurationProvider: attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)) + TimeSpan.FromMilliseconds(Random.Shared.Next(0, 1000)),
                     onRetry: (outcome, timespan, retryAttempt, context) =>
                     {
                         // Seq'te gördüğün o 'Deneme: []' hatasını düzelten kusursuz eşleşme:
-                        logger.LogWarning("FreeCurrency API geçici hata verdi ({ErrorMessage}). {DelaySeconds:F1} sn sonra tekrar deneniyor (Deneme: {RetryCount}).",
+                        logger.LogWarning("FreeCurrency API returned a transient error ({ErrorMessage}). Retrying in {DelaySeconds:F1}s (attempt {RetryCount}).",
                             outcome.Exception?.Message ?? $"HTTP {(int?)outcome.Result?.StatusCode}",
                             timespan.TotalSeconds,
                             retryAttempt);
@@ -143,12 +143,12 @@ public static class DependencyInjection
         });
 
         services.AddTransient<IPriceProvider>(sp => sp.GetRequiredService<FreeCurrencyClient>());
-        
+
         // --- YAHOO FINANCE CLIENT CONFIGURATION ---
         services.AddTransient<IPriceProvider, YahooBistClient>();
         services.AddTransient<IPriceProvider, YahooForexClient>();
         services.AddTransient<IPriceProvider, YahooCryptoClient>();
-        
+
         services.AddHostedService<DailyRolloverService>();
         services.AddHostedService<DataRetentionWorker>();
         services.AddHostedService<HistoryCacheWarmer>();

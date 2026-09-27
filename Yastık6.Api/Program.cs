@@ -17,7 +17,7 @@ Log.Logger = new LoggerConfiguration()
     .Enrich.FromLogContext()
     .WriteTo.Console()
     .WriteTo.File(
-        "logs/yastik-api-.txt", 
+        "logs/yastik-api-.txt",
         rollingInterval: RollingInterval.Day,
         fileSizeLimitBytes: 10 * 1024 * 1024, // Dosya boyutu 10MB'ı aşarsa yenisine geçer
         rollOnFileSizeLimit: true,            // Boyut limitini aktif eder
@@ -50,9 +50,9 @@ try
             .Enrich.FromLogContext()
             // [YENİ 1]: Her loga eşsiz bir İstek Kimliği (Trace ID) basar. Hata takibini kusursuzlaştırır.
             .Enrich.WithCorrelationIdHeader("X-Correlation-Id")
-            
+
             // [YENİ 2]: Siber bot taramalarını (Zombies) Seq'e ulaşmadan havada yok eden Gümrük Memuru!
-            .Filter.ByExcluding(logEvent => 
+            .Filter.ByExcluding(logEvent =>
             {
                 if (logEvent.Properties.TryGetValue("RequestPath", out var pathValue))
                 {
@@ -64,10 +64,10 @@ try
             .WriteTo.Console()
             .WriteTo.Seq(seqUrl) // Çalışma zamanındaki tüm logları Seq paneline akıtır
             .WriteTo.File(
-                "logs/yastik-api-.txt", 
+                "logs/yastik-api-.txt",
                 rollingInterval: RollingInterval.Day,
                 fileSizeLimitBytes: 10 * 1024 * 1024,
-                rollOnFileSizeLimit: true,            
+                rollOnFileSizeLimit: true,
                 retainedFileCountLimit: 3, // Canlı ortam çalışma zamanında da 3 gün kuralı geçerli
                 shared: true);
     });
@@ -82,12 +82,12 @@ try
         });
 
     builder.Services.AddEndpointsApiExplorer();
-    
+
     builder.Services.AddSwaggerGen(c =>
     {
         c.OperationFilter<Yastık6.Api.Infrastructure.Swagger.ApiKeyHeaderFilter>();
     });
-    
+
     // Herkese açık CORS ("AllowAll") yerine katı CORS (StrictCors) politikası
     builder.Services.AddCors(options =>
     {
@@ -117,8 +117,8 @@ try
                     QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
                     QueueLimit = 2
                 }));
-        
-        options.RejectionStatusCode = StatusCodes.Status429TooManyRequests; 
+
+        options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
     });
 
     // Register Health Checks for system monitoring
@@ -144,32 +144,48 @@ try
 
     // Register Application Services
     builder.Services.AddYastık6Application(builder.Configuration);
-    
+
+    // Required for Enrich.WithCorrelationIdHeader to be able to read the current request's headers
+    builder.Services.AddHttpContextAccessor();
+
     builder.Services.AddSingleton<AlertTracker>();
     builder.Services.AddHostedService<DailyReportWorker>();
     builder.Services.AddHostedService<TelegramCommandListener>();
 
     var app = builder.Build();
 
-    var expectedApiKey = app.Configuration["ApiSettings:MobileClientKey"] 
+    var expectedApiKey = app.Configuration["ApiSettings:MobileClientKey"]
                          ?? throw new InvalidOperationException("Critical Security Error: MobileClientKey is not configured.");
 
     // --- MIDDLEWARE PIPELINE (ORDER IS CRITICAL) ---
 
     app.UseForwardedHeaders();
+
+    // Ensures every request carries an X-Correlation-Id before anything logs, so the
+    // Enrich.WithCorrelationIdHeader enricher above always has something to attach.
+    app.Use(async (context, next) =>
+    {
+        if (!context.Request.Headers.ContainsKey("X-Correlation-Id"))
+        {
+            context.Request.Headers["X-Correlation-Id"] = Guid.NewGuid().ToString();
+        }
+        context.Response.Headers["X-Correlation-Id"] = context.Request.Headers["X-Correlation-Id"].ToString();
+        await next(context);
+    });
+
     app.UseCors("StrictCors");
     app.UseExceptionHandler();
 
     app.UseSerilogRequestLogging(options =>
     {
         options.MessageTemplate = "HTTP {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.0000} ms";
-        
+
         // [YENİ 3]: Canlı (Prod) ortamda başarılı istekleri (HTTP 200) yutar, diski korur. 
         // Sadece HTTP 400 ve üstü hatalar Seq'e Warning olarak düşer.
-        options.GetLevel = (httpContext, elapsed, ex) => 
+        options.GetLevel = (httpContext, elapsed, ex) =>
         {
-            return ex != null || httpContext.Response.StatusCode >= 400 
-                ? Serilog.Events.LogEventLevel.Warning 
+            return ex != null || httpContext.Response.StatusCode >= 400
+                ? Serilog.Events.LogEventLevel.Warning
                 : Serilog.Events.LogEventLevel.Debug;
         };
     });
@@ -190,9 +206,9 @@ try
         var statusCode = context.Response.StatusCode;
 
         // Senin sisteminde yasal olarak var olan ve beklediğin rotalar
-        bool isExpectedRoute = path.StartsWith("/api/") || 
-                               path.StartsWith("/swagger") || 
-                               path.StartsWith("/health") || 
+        bool isExpectedRoute = path.StartsWith("/api/") ||
+                               path.StartsWith("/swagger") ||
+                               path.StartsWith("/health") ||
                                path == "/";
 
         // Beklenmeyen rotadan BAŞARILI yanıt döndüyse çanları çal!
@@ -201,7 +217,7 @@ try
             var alertService = context.RequestServices.GetRequiredService<IAlertService>();
             var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
 
-            logger.LogCritical("🚨 GÜVENLİK İHLALİ! Tanımlanmayan bir rotaya erişim sağlandı: {Path}", path);
+            logger.LogCritical("SECURITY BREACH! An unrecognized route was accessed successfully: {Path}", path);
 
             var alertMessage = $"""
                                🚨 *KRİTİK GÜVENLİK İHLALİ (Sızıntı Şüphesi)* 🚨
@@ -226,7 +242,7 @@ try
             if (!app.Environment.IsDevelopment())
             {
                 var swaggerKey = app.Configuration["ApiSettings:SwaggerKey"];
-                
+
                 if (string.IsNullOrEmpty(swaggerKey) || context.Request.Query["key"] != swaggerKey)
                 {
                     context.Response.StatusCode = StatusCodes.Status404NotFound;
@@ -242,8 +258,8 @@ try
             await next(context);
             return;
         }
-        
-        if (!context.Request.Headers.TryGetValue("X-Mobile-Client-Key", out var extractedApiKey) || 
+
+        if (!context.Request.Headers.TryGetValue("X-Mobile-Client-Key", out var extractedApiKey) ||
             extractedApiKey != expectedApiKey)
         {
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
@@ -265,7 +281,7 @@ try
         {
             var context = services.GetRequiredService<ApplicationDbContext>();
             var logger = services.GetRequiredService<ILogger<Program>>();
-            
+
             var dbConnection = context.Database.GetDbConnection();
             if (dbConnection is Microsoft.Data.Sqlite.SqliteConnection sqliteConnection)
             {
@@ -278,12 +294,12 @@ try
                     logger.LogInformation("Created missing database directory at: {DirectoryPath}", directoryPath);
                 }
             }
-            
-            context.Database.Migrate(); 
+
+            context.Database.Migrate();
             context.Database.ExecuteSqlRaw("PRAGMA journal_mode=WAL;");
-            
+
             await DbSeeder.SeedSymbolsAsync(context, logger);
-            
+
             Log.Information("Database migration, WAL mode activation, and seeding completed successfully.");
         }
         catch (Exception ex)
@@ -294,7 +310,7 @@ try
 
     app.Run();
 }
-catch (HostAbortedException) 
+catch (HostAbortedException)
 {
     throw;
 }

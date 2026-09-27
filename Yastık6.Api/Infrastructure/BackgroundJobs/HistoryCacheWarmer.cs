@@ -1,7 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Yastık6.Api.Application.Features.Prices;
 using Yastık6.Api.Infrastructure.Persistence;
-using Yastık6.Api.Infrastructure.Alerts; 
+using Yastık6.Api.Infrastructure.Alerts;
 
 namespace Yastık6.Api.Infrastructure.BackgroundJobs;
 
@@ -9,10 +9,10 @@ public class HistoryCacheWarmer : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<HistoryCacheWarmer> _logger;
-    private readonly IAlertService _alertService; 
+    private readonly IAlertService _alertService;
 
     public HistoryCacheWarmer(
-        IServiceProvider serviceProvider, 
+        IServiceProvider serviceProvider,
         ILogger<HistoryCacheWarmer> logger,
         IAlertService alertService)
     {
@@ -23,8 +23,8 @@ public class HistoryCacheWarmer : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("🚀 Hayalet İşçi (Cache Warmer) uyandı ve göreve başladı.");
-        
+        _logger.LogInformation("Cache Warmer woke up and started working.");
+
         await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
 
         var dayTask = RunWarmerLoopAsync(PriceHistoryRange.Day, TimeSpan.FromMinutes(4), stoppingToken);
@@ -42,7 +42,7 @@ public class HistoryCacheWarmer : BackgroundService
             try
             {
                 using var scope = _serviceProvider.CreateScope();
-                
+
                 var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
                 var priceService = scope.ServiceProvider.GetRequiredService<IPriceService>();
 
@@ -55,18 +55,19 @@ public class HistoryCacheWarmer : BackgroundService
                     await priceService.GetHistoryAsync(code, range, stoppingToken);
                 }
                 _logger.LogInformation(
-                    "✅ [{Range}] için tüm grafikler vitrine dizildi (Pre-warmed). Sonraki tazeleme: {RefreshIntervalMinutes} dk sonra.", 
-                    range, 
-                    refreshInterval.TotalMinutes);            }
+                    "[{Range}] All charts pre-warmed. Next refresh in {RefreshIntervalMinutes} minutes.",
+                    range,
+                    refreshInterval.TotalMinutes);
+            }
             catch (Exception ex)
             {
                 _logger.LogError(
-                    ex, 
-                    "❌ [{Range}] Hayalet İşçi çalışırken hata oluştu.", 
-                    range);                
+                    ex,
+                    "[{Range}] Cache Warmer encountered an error.",
+                    range);
                 // [DÜZELTİLDİ]: Sekretere "{Range}" bazlı özel çelik parmak izi verildi!
                 await _alertService.SendAlertAsync(
-                    $"🔥 *CACHE WARMER ÇÖKTÜ*\nGrafikler belleğe dizilemedi. Kullanıcı tarafında ({range}) grafiklerinin yüklenmesi ciddi yavaşlayacaktır!\nHata: `{ex.Message}`", 
+                    $"🔥 *CACHE WARMER ÇÖKTÜ*\nGrafikler belleğe dizilemedi. Kullanıcı tarafında ({range}) grafiklerinin yüklenmesi ciddi yavaşlayacaktır!\nHata: `{ex.Message}`",
                     $"CacheWarmer_{range}_{ex.GetType().Name}", // <- EKLENEN PARMAK İZİ (Örn: CacheWarmer_Week_SqlException)
                     stoppingToken);
             }

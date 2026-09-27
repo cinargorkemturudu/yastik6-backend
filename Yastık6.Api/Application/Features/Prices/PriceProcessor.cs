@@ -27,8 +27,8 @@ public sealed class PriceProcessor : IPriceProcessor
     }
 
     public async Task<List<LatestPriceResponse>> ProcessPricesAsync(
-        List<LatestPriceResponse> rawPrices, 
-        string providerName, 
+        List<LatestPriceResponse> rawPrices,
+        string providerName,
         bool isMarketOpen,
         CancellationToken ct = default)
     {
@@ -43,14 +43,14 @@ public sealed class PriceProcessor : IPriceProcessor
         if (rawUsd != null)
         {
             currentSnapshot.TryGetValue("USDTRY=X", out var existingUsd);
-            
+
             // Eğer USDTRY fiyatı geçerliyse kuru onayla, değilse pas geç
             if (await _shieldValidator.ValidatePriceAsync(rawUsd, existingUsd, ct))
             {
                 currentUsdPrice = rawUsd.Ask;
             }
         }
-        
+
         // Eğer güncel kur gelmediyse veya kalkan reddettiyse, RAM'deki son güvenli kuru kullan
         if (currentUsdPrice <= 0)
         {
@@ -64,8 +64,8 @@ public sealed class PriceProcessor : IPriceProcessor
             {
                 if (currentUsdPrice == price.Ask)
                 {
-                    processedPrices.Add(price with 
-                    { 
+                    processedPrices.Add(price with
+                    {
                         IsMarketOpen = isMarketOpen,
                         AsOfUtc = price.AsOfUtc.ToUniversalTime(),
                         ValidUntilUtc = price.ValidUntilUtc.ToUniversalTime()
@@ -96,11 +96,11 @@ public sealed class PriceProcessor : IPriceProcessor
             {
                 if (currentUsdPrice <= 0)
                 {
-                    _logger.LogWarning("[BFF Pipeline] USD/TRY oranı hazır olmadığı için {Code} çevirimi ertelendi.", finalPrice.ProductCode);
-                    continue; 
+                    _logger.LogWarning("[BFF Pipeline] USD/TRY rate not ready yet, deferring conversion of {Code}.", finalPrice.ProductCode);
+                    continue;
                 }
 
-                finalPrice = finalPrice with 
+                finalPrice = finalPrice with
                 {
                     Bid = finalPrice.Bid * currentUsdPrice,
                     Ask = finalPrice.Ask * currentUsdPrice,
@@ -113,7 +113,7 @@ public sealed class PriceProcessor : IPriceProcessor
             currentSnapshot.TryGetValue(finalPrice.ProductCode, out var existingPrice);
             if (!await _shieldValidator.ValidatePriceAsync(finalPrice, existingPrice, ct))
             {
-                continue; 
+                continue;
             }
 
             // 6. AĞIR MATEMATİK: Sadece Kalkanı geçen tertemiz veriler için çalıştır
@@ -122,8 +122,8 @@ public sealed class PriceProcessor : IPriceProcessor
                 ? ((finalPrice.Ask - previousClose.Value) / previousClose.Value) * 100m
                 : finalPrice.ChangeRate;
 
-            finalPrice = finalPrice with 
-            { 
+            finalPrice = finalPrice with
+            {
                 ChangeRate = Math.Round(changeRate, 2),
                 AsOfUtc = finalPrice.AsOfUtc.ToUniversalTime(),
                 ValidUntilUtc = finalPrice.ValidUntilUtc.ToUniversalTime(),

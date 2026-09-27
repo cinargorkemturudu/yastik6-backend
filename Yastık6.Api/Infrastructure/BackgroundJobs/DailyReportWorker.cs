@@ -14,30 +14,30 @@ public sealed class DailyReportWorker : BackgroundService
     private readonly AlertTracker _tracker;
 
     public DailyReportWorker(
-        ILogger<DailyReportWorker> logger, 
-        IAlertService alertService, 
+        ILogger<DailyReportWorker> logger,
+        IAlertService alertService,
         AlertTracker tracker)
     {
         _logger = logger;
         _alertService = alertService;
-        _tracker = tracker; 
+        _tracker = tracker;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("🌙 Daily Report Worker (Gece Bekçisi) göreve başladı. Gece raporları ayarlandı.");
+        _logger.LogInformation("Daily Report Worker started. Nightly reports scheduled.");
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
                 var now = DateTime.Now;
-                var nextRun = now.Date.AddDays(1).AddMinutes(-5); 
-                
+                var nextRun = now.Date.AddDays(1).AddMinutes(-5);
+
                 // [BUG FIX]: Eşitlik durumu (>=) eklendi
                 if (now >= nextRun)
                 {
-                    nextRun = nextRun.AddDays(1); 
+                    nextRun = nextRun.AddDays(1);
                 }
 
                 var delay = nextRun - now;
@@ -48,12 +48,12 @@ public sealed class DailyReportWorker : BackgroundService
                     delay = TimeSpan.FromSeconds(1);
                 }
 
-                _logger.LogInformation("Gece Bekçisi uykuya dalıyor. Uyanış zamanı: {NextRun}", nextRun.ToString("HH:mm"));
-                
+                _logger.LogInformation("Night Watcher going to sleep. Next wake-up time: {NextRun}", nextRun.ToString("HH:mm"));
+
                 await Task.Delay(delay, stoppingToken);
 
                 var (active, resolved) = _tracker.GetAndClearDailySummary();
-                
+
                 var reportBuilder = new StringBuilder();
                 reportBuilder.AppendLine("📊 *Yastık6 Gün Sonu Asayiş Raporu*\n");
 
@@ -90,7 +90,7 @@ public sealed class DailyReportWorker : BackgroundService
                 reportBuilder.AppendLine("_Sistem stabil. Kayıt defteri yarına hazır. İyi geceler patron._");
 
                 await _alertService.SendAlertAsync(reportBuilder.ToString(), null, stoppingToken);
-                _logger.LogInformation("Gün sonu vukuat raporu Telegram'a başarıyla iletildi.");
+                _logger.LogInformation("End-of-day incident report successfully sent to Telegram.");
             }
             catch (TaskCanceledException)
             {
@@ -98,7 +98,7 @@ public sealed class DailyReportWorker : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Gün sonu raporu hazırlanırken beklenmeyen bir hata oluştu.");
+                _logger.LogError(ex, "Unexpected error occurred while preparing the end-of-day report.");
                 await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken);
             }
         }
