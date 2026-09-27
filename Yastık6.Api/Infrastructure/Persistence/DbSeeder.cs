@@ -16,8 +16,8 @@ public static class DbSeeder
         // 1. FOREX VE KRİPTO PARİTELERİ (Sabit ve Majör Liste)
         var forexAndCrypto = new[]
         {
-            "USDTRY=X", "EURTRY=X", "GBPTRY=X", "CHFTRY=X", "JPYTRY=X", 
-            "AUDTRY=X", "CADTRY=X", "CNYTRY=X", "RUBTRY=X", "XAU=F", 
+            "USDTRY=X", "EURTRY=X", "GBPTRY=X", "CHFTRY=X", "JPYTRY=X",
+            "AUDTRY=X", "CADTRY=X", "CNYTRY=X", "RUBTRY=X", "XAU=F",
             "XAG=F", "BTC-USD", "ETH-USD"
         };
 
@@ -25,12 +25,12 @@ public static class DbSeeder
         {
             if (!existingCodes.Contains(code))
             {
-                newSymbols.Add(new TrackedSymbol 
-                { 
-                    Id = Guid.NewGuid(), 
-                    Code = code, 
-                    SymbolType = code.Contains('=') || code.Contains("=F") ? "FOREX" : "CRYPTO", 
-                    IsActive = true 
+                newSymbols.Add(new TrackedSymbol
+                {
+                    Id = Guid.NewGuid(),
+                    Code = code,
+                    SymbolType = code.Contains('=') || code.Contains("=F") ? "FOREX" : "CRYPTO",
+                    IsActive = true
                 });
             }
         }
@@ -46,7 +46,7 @@ public static class DbSeeder
             {
                 using var httpClient = new HttpClient();
                 var response = await httpClient.GetStringAsync("https://raw.githubusercontent.com/ahmeterenodaci/Istanbul-Stock-Exchange--BIST--including-symbols-and-logos/main/without_logo.json");
-                
+
                 var bistStocks = JsonSerializer.Deserialize<List<BistRepoItem>>(response);
 
                 if (bistStocks != null)
@@ -54,15 +54,15 @@ public static class DbSeeder
                     foreach (var stock in bistStocks)
                     {
                         var yahooCode = $"{stock.Symbol}.IS";
-                        
+
                         if (!existingCodes.Contains(yahooCode) && !newSymbols.Any(x => x.Code == yahooCode))
                         {
-                            newSymbols.Add(new TrackedSymbol 
-                            { 
-                                Id = Guid.NewGuid(), 
-                                Code = yahooCode, 
-                                SymbolType = "BIST", 
-                                IsActive = true 
+                            newSymbols.Add(new TrackedSymbol
+                            {
+                                Id = Guid.NewGuid(),
+                                Code = yahooCode,
+                                SymbolType = "BIST",
+                                IsActive = true
                             });
                         }
                     }
@@ -70,7 +70,7 @@ public static class DbSeeder
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "BİST hisseleri GitHub üzerinden çekilirken bir hata oluştu. Sadece Forex pariteleri eklenecek.");
+                logger.LogWarning(ex, "Failed to fetch BIST stocks from GitHub. Only Forex pairs will be added.");
             }
         }
 
@@ -79,7 +79,7 @@ public static class DbSeeder
         {
             await context.TrackedSymbols.AddRangeAsync(newSymbols);
             await context.SaveChangesAsync();
-            logger.LogInformation("Başarılı: {Count} adet yeni BİST ve Forex sembolü veritabanına eklendi.", newSymbols.Count);
+            logger.LogInformation("Success: {Count} new BIST and Forex symbols added to the database.", newSymbols.Count);
         }
     }
 
