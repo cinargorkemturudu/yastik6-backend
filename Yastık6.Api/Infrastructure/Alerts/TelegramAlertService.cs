@@ -59,6 +59,10 @@ public sealed class TelegramAlertService : IAlertService
             {
                 _logger.LogWarning("Watchdog barked but Telegram didn't hear it! Status: {StatusCode}", response.StatusCode);
             }
+            else
+            {
+                _logger.LogInformation("Alert sent to Telegram. AlertKey={AlertKey}", cacheKey ?? "general");
+            }
         }
         catch (TaskCanceledException)
         {
