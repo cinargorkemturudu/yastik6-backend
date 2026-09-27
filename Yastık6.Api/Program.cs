@@ -161,16 +161,25 @@ try
 
     app.UseForwardedHeaders();
 
-    // Ensures every request carries an X-Correlation-Id before anything logs, so the
-    // Enrich.WithCorrelationIdHeader enricher above always has something to attach.
+    // Ensures every request carries an X-Correlation-Id, and pushes it onto Serilog's
+    // ambient LogContext for the whole request so every log line written anywhere
+    // during it - no matter how deep the call stack - carries CorrelationId via the
+    // Enrich.FromLogContext() enricher above. (The separate Enrich.WithCorrelationIdHeader
+    // enricher was not reliably propagating to nested service calls, so this replaces
+    // it as the actual mechanism rather than relying on that package's internals.)
     app.Use(async (context, next) =>
     {
-        if (!context.Request.Headers.ContainsKey("X-Correlation-Id"))
+        var correlationId = context.Request.Headers.TryGetValue("X-Correlation-Id", out var existing) && !string.IsNullOrEmpty(existing)
+            ? existing.ToString()
+            : Guid.NewGuid().ToString();
+
+        context.Request.Headers["X-Correlation-Id"] = correlationId;
+        context.Response.Headers["X-Correlation-Id"] = correlationId;
+
+        using (Serilog.Context.LogContext.PushProperty("CorrelationId", correlationId))
         {
-            context.Request.Headers["X-Correlation-Id"] = Guid.NewGuid().ToString();
+            await next(context);
         }
-        context.Response.Headers["X-Correlation-Id"] = context.Request.Headers["X-Correlation-Id"].ToString();
-        await next(context);
     });
 
     app.UseCors("StrictCors");
