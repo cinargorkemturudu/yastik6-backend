@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Caching.Memory;
 using Yastık6.Api.Application.Common.Interfaces;
 
@@ -10,6 +11,7 @@ public sealed class PriceService : IPriceService
     private readonly ISystemClock _clock;
     private readonly IMemoryCache _cache;
     private readonly ILogger<PriceService> _logger;
+    private readonly IHttpContextAccessor _httpContextAccessor;
 
     // Thundering Herd (Sürü Psikolojisi) önlemi için kilit mekanizması
     private static readonly SemaphoreSlim _cacheLock = new SemaphoreSlim(1, 1);
@@ -18,12 +20,14 @@ public sealed class PriceService : IPriceService
         IPriceHistoryRepository repository,
         ISystemClock clock,
         IMemoryCache cache,
-        ILogger<PriceService> logger)
+        ILogger<PriceService> logger,
+        IHttpContextAccessor httpContextAccessor)
     {
         _repository = repository;
         _clock = clock;
         _cache = cache;
         _logger = logger;
+        _httpContextAccessor = httpContextAccessor;
     }
 
     public async Task<PriceHistoryResponse> GetHistoryAsync(
@@ -33,10 +37,16 @@ public sealed class PriceService : IPriceService
     {
         var cacheKey = $"HistoryChart_{productCode}_{range}";
 
+        // Only log at Information for a real incoming request - the background
+        // HistoryCacheWarmer sweeps hundreds of symbols on a timer and would
+        // otherwise flood Seq with routine noise. Same events, quieter by default
+        // when nothing is actually watching this specific call.
+        var logLevel = _httpContextAccessor.HttpContext != null ? LogLevel.Information : LogLevel.Debug;
+
         // 1. Önbellekte (Cache) varsa direkt dön
         if (!_cache.TryGetValue(cacheKey, out IReadOnlyList<PricePointDto>? points))
         {
-            _logger.LogInformation("History cache miss for {ProductCode} ({Range}), querying repository", productCode, range);
+            _logger.Log(logLevel, "History cache miss for {ProductCode} ({Range}), querying repository", productCode, range);
             var stopwatch = Stopwatch.StartNew();
 
             // 2. Kilit: Aynı anda sadece 1 istek veritabanına inebilir
@@ -66,7 +76,7 @@ public sealed class PriceService : IPriceService
                     _cache.Set(cacheKey, points, cacheOptions);
 
                     stopwatch.Stop();
-                    _logger.LogInformation("History computed for {ProductCode} ({Range}): {PointCount} points, DurationMs={DurationMs}",
+                    _logger.Log(logLevel, "History computed for {ProductCode} ({Range}): {PointCount} points, DurationMs={DurationMs}",
                         productCode, range, points.Count, stopwatch.ElapsedMilliseconds);
                 }
             }
@@ -77,7 +87,7 @@ public sealed class PriceService : IPriceService
         }
         else
         {
-            _logger.LogInformation("History cache hit for {ProductCode} ({Range})", productCode, range);
+            _logger.Log(logLevel, "History cache hit for {ProductCode} ({Range})", productCode, range);
         }
 
         return new PriceHistoryResponse(
