@@ -8,14 +8,14 @@ namespace Yastık6.Api.Infrastructure.Providers.Harem;
 
 // [DÜZELTİLDİ]: Primary Constructor (C# 12) kullanıldı. Sınıf gövdesindeki kalabalık silindi.
 public sealed class HaremClient(
-    HttpClient client, 
-    IConfiguration config, 
-    ILogger<HaremClient> logger, 
+    HttpClient client,
+    IConfiguration config,
+    ILogger<HaremClient> logger,
     AlertTracker tracker,
-    ISystemClock clock) 
+    ISystemClock clock)
     : BasePriceClient(logger, tracker, clock)
 {
-    private readonly string _marketPath = config["Harem:MarketPath"] 
+    private readonly string _marketPath = config["Harem:MarketPath"]
                       ?? throw new InvalidOperationException("Harem:MarketPath konfigürasyonu eksik!");
 
     public override string ProviderName => "Harem";
@@ -23,7 +23,7 @@ public sealed class HaremClient(
     public override bool IsMarketOpen()
     {
         var now = Clock.UtcNow.AddHours(3); // Türkiye Saati
-        
+
         // [DÜZELTİLDİ]: IDE'nin "Merge into pattern" önerisiyle or/and desenleri kullanıldı.
         var isWeekend = now.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday;
         var isMarketHours = now.Hour is >= 8 and < 18;
@@ -33,16 +33,10 @@ public sealed class HaremClient(
 
     public override TimeSpan RefreshInterval => IsMarketOpen() ? TimeSpan.FromSeconds(15) : TimeSpan.FromMinutes(30);
 
-    public override TimeSpan MarketCloseTime 
-    {
-        get
-        {
-            if (!IsMarketOpen()) return TimeSpan.Zero;
-            var now = Clock.UtcNow.AddHours(3);
-            var closeTime = new DateTime(now.Year, now.Month, now.Day, 18, 0, 0);
-            return closeTime - now;
-        }
-    }
+    // Harem 18:00'da tamamen durmuyor, sadece yoklama aralığımızı genişletiyoruz (bkz. RefreshInterval).
+    // O yüzden günlük % değişim çapasını "piyasa kapanışı" gibi davranmayan diğer sağlayıcılarla
+    // (YahooFinanceBase) aynı şekilde gece yarısına yakın sabit bir saate bağlıyoruz.
+    public override TimeSpan MarketCloseTime => TimeSpan.FromHours(23.99);
 
     // [DÜZELTİLDİ]: Opsiyonel '= default' parametresi silindi, base metodun imzasıyla birebir aynı yapıldı.
     protected override async Task<List<LatestPriceResponse>> FetchDataAsync(CancellationToken ct)
@@ -55,12 +49,12 @@ public sealed class HaremClient(
         request.Headers.Add("Pragma", "no-cache");
 
         // Artık "client" parametresi doğrudan Primary Constructor'dan geliyor, _client kullanmaya gerek kalmadı.
-        var response = await client.SendAsync(request, ct); 
-        
+        var response = await client.SendAsync(request, ct);
+
         response.EnsureSuccessStatusCode();
 
         var rawResponse = await response.Content.ReadFromJsonAsync<HaremBaseResponseRaw>(cancellationToken: ct);
-        
+
         // [DÜZELTİLDİ]: "Merge into pattern" (is null or []) kullanıldı.
         if (rawResponse?.Data is null or [])
         {
@@ -80,7 +74,7 @@ public sealed class HaremClient(
 
         return result;
     }
-    
+
     // [DÜZELTİLDİ]: Class yerine "sealed record" yapıldı. 
     // Property'ler "get; set;" yerine "get; init;" yapıldı. Tüm Instantiate, Auto-property ve Init-only uyarıları susturuldu.
     public sealed record HaremBaseResponseRaw
@@ -91,8 +85,8 @@ public sealed class HaremClient(
 
     public sealed record HaremItemRaw
     {
-        [JsonPropertyName("key")] public string Key { get; init; } = ""; 
-        [JsonPropertyName("code")] public string? Code { get; init; } 
+        [JsonPropertyName("key")] public string Key { get; init; } = "";
+        [JsonPropertyName("code")] public string? Code { get; init; }
         [JsonPropertyName("buy")] public string? Buy { get; init; }
         [JsonPropertyName("sell")] public string? Sell { get; init; }
         [JsonPropertyName("last_update")] public string? LastUpdate { get; init; }
