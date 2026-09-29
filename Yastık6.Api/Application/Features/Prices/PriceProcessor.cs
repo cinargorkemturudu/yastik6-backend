@@ -59,7 +59,9 @@ public sealed class PriceProcessor : IPriceProcessor
 
         foreach (var price in rawPrices)
         {
-            // USDTRY'yi yukarıda zaten kalkanla doğruladık, listeye ekleyip geçiyoruz
+            // USDTRY'yi yukarıda zaten kalkanla doğruladık, listeye ekleyip geçiyoruz.
+            // Ama "zaten doğrulandı" sadece Kalkan'ı (adım 5) kapsıyor - günlük % değişim (adım 6)
+            // burada hâlâ hesaplanmadan kaçıyordu, o da eklendi.
             if (price.ProductCode == "USDTRY=X")
             {
                 if (currentUsdPrice == price.Ask)
@@ -68,7 +70,8 @@ public sealed class PriceProcessor : IPriceProcessor
                     {
                         IsMarketOpen = isMarketOpen,
                         AsOfUtc = price.AsOfUtc.ToUniversalTime(),
-                        ValidUntilUtc = price.ValidUntilUtc.ToUniversalTime()
+                        ValidUntilUtc = price.ValidUntilUtc.ToUniversalTime(),
+                        ChangeRate = CalculateChangeRate(price.ProductCode, price.Ask, price.ChangeRate)
                     });
                 }
                 continue;
@@ -117,14 +120,9 @@ public sealed class PriceProcessor : IPriceProcessor
             }
 
             // 6. AĞIR MATEMATİK: Sadece Kalkanı geçen tertemiz veriler için çalıştır
-            var previousClose = _previousCloseStore.GetPreviousClose(finalPrice.ProductCode);
-            decimal changeRate = previousClose.HasValue && previousClose.Value > 0
-                ? ((finalPrice.Ask - previousClose.Value) / previousClose.Value) * 100m
-                : finalPrice.ChangeRate;
-
             finalPrice = finalPrice with
             {
-                ChangeRate = Math.Round(changeRate, 2),
+                ChangeRate = CalculateChangeRate(finalPrice.ProductCode, finalPrice.Ask, finalPrice.ChangeRate),
                 AsOfUtc = finalPrice.AsOfUtc.ToUniversalTime(),
                 ValidUntilUtc = finalPrice.ValidUntilUtc.ToUniversalTime(),
                 IsMarketOpen = isMarketOpen
@@ -134,5 +132,17 @@ public sealed class PriceProcessor : IPriceProcessor
         }
 
         return processedPrices;
+    }
+
+    // Önceki kapanış varsa ona göre; yoksa (henüz rollover çalışmadıysa) sağlayıcının
+    // kendi (genelde 0 olan) ham ChangeRate'ine geri düşer.
+    private decimal CalculateChangeRate(string productCode, decimal currentAsk, decimal fallbackRate)
+    {
+        var previousClose = _previousCloseStore.GetPreviousClose(productCode);
+        var changeRate = previousClose.HasValue && previousClose.Value > 0
+            ? ((currentAsk - previousClose.Value) / previousClose.Value) * 100m
+            : fallbackRate;
+
+        return Math.Round(changeRate, 2);
     }
 }
