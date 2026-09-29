@@ -7,17 +7,19 @@ using Yastık6.Api.Infrastructure.Time;
 namespace Yastık6.Api.Infrastructure.Providers.FreeCurrency;
 
 public sealed class FreeCurrencyClient(
-    HttpClient client, 
-    IConfiguration config, 
-    ILogger<FreeCurrencyClient> logger, 
-    AlertTracker tracker, 
-    ISystemClock clock) 
+    HttpClient client,
+    IConfiguration config,
+    ILogger<FreeCurrencyClient> logger,
+    AlertTracker tracker,
+    ISystemClock clock)
     : BasePriceClient(logger, tracker, clock)
 {
-    private readonly string _apiKey = config["FreeCurrency:ApiKey"] 
+    private readonly string _apiKey = config["FreeCurrency:ApiKey"]
                                       ?? throw new InvalidOperationException("FreeCurrency API Key eksik!");
 
-    public override string ProviderName => "FreeCurrency";
+    // FreeCurrencyMapper her fiyat kaydına Source: "FreeCurrencyAPI" damgası basıyor;
+    // DailyRolloverService önceki kapanışı bu isimle arıyor, o yüzden burası da eşleşmeli.
+    public override string ProviderName => "FreeCurrencyAPI";
 
     public override bool IsMarketOpen()
     {
@@ -26,7 +28,7 @@ public sealed class FreeCurrencyClient(
     }
 
     public override TimeSpan RefreshInterval => IsMarketOpen() ? TimeSpan.FromMinutes(30) : TimeSpan.FromHours(24);
-    
+
     public override TimeSpan MarketCloseTime
     {
         get
@@ -41,7 +43,7 @@ public sealed class FreeCurrencyClient(
 
             int daysUntilFriday = ((int)DayOfWeek.Friday - (int)now.DayOfWeek + 7) % 7;
             var nextFridayMidnight = now.Date.AddDays(daysUntilFriday + 1);
-            
+
             return nextFridayMidnight - now;
         }
     }
