@@ -49,7 +49,11 @@ public static class HaremDataMapper
         string formattedBid = bid.ToString("N2", CultureInfo.InvariantCulture);
         string formattedAsk = ask.ToString("N2", CultureInfo.InvariantCulture);
 
-        var asOfUtc = ParseTurkishDate(item.LastUpdate);
+        // Vendorun kendi last_update alanına güvenmiyoruz: fiyat değişse bile bu alan
+        // her zaman aynı hızda ilerlemeyebiliyor, bu da bizim ValidUntilUtc penceremizin
+        // gerçekte taze veriyi "bayat" gibi göstermesine yol açıyordu. Diğer tüm
+        // provider'lar gibi kendi fetch anımızı kullanıyoruz.
+        var asOfUtc = DateTimeOffset.UtcNow;
         var nowTr = DateTimeOffset.UtcNow.AddHours(3);
         bool isWeekendTr = nowTr.DayOfWeek == DayOfWeek.Saturday || nowTr.DayOfWeek == DayOfWeek.Sunday;
 
@@ -125,15 +129,5 @@ public static class HaremDataMapper
         {
             return decimal.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out value);
         }
-    }
-
-    private static DateTimeOffset ParseTurkishDate(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw)) return DateTimeOffset.UtcNow;
-        if (DateTime.TryParseExact(raw.Trim(), "dd.MM.yyyy HH:mm:ss", TrCulture, DateTimeStyles.AssumeLocal, out var dt))
-        {
-            return dt.ToUniversalTime();
-        }
-        return DateTimeOffset.UtcNow;
     }
 }
