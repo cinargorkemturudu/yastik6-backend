@@ -35,6 +35,67 @@ public class BasePriceClientTests
             => Task.FromResult(_results);
     }
 
+    private sealed class FailingPriceClient : BasePriceClient
+    {
+        private readonly Func<Exception> _exceptionFactory;
+
+        public FailingPriceClient(Func<Exception> exceptionFactory)
+            : base(NullLogger.Instance, new AlertTracker(), new FakeSystemClock())
+        {
+            _exceptionFactory = exceptionFactory;
+        }
+
+        public int FetchAttempts { get; private set; }
+
+        public override string ProviderName => "TestProvider";
+        public override TimeSpan RefreshInterval => TimeSpan.FromSeconds(15);
+
+        protected override Task<List<LatestPriceResponse>> FetchDataAsync(CancellationToken ct)
+        {
+            FetchAttempts++;
+            throw _exceptionFactory();
+        }
+    }
+
+    [Fact]
+    public async Task GetMarketOverviewAsync_Throws_ProviderFetchException_AfterRetriesExhausted()
+    {
+        // Eskiden boş liste dönüyordu ve PriceSnapshotRefresher'ın fallback/Telegram yolu hiç tetiklenmiyordu.
+        var client = new FailingPriceClient(() => new HttpRequestException("Connection refused"));
+
+        var act = () => client.GetMarketOverviewAsync();
+
+        var thrown = await act.Should().ThrowAsync<ProviderFetchException>();
+        thrown.Which.ProviderName.Should().Be("TestProvider");
+        thrown.Which.InnerException.Should().BeOfType<HttpRequestException>();
+        client.FetchAttempts.Should().Be(3); // 1 deneme + 2 Polly retry
+    }
+
+    [Fact]
+    public async Task GetMarketOverviewAsync_Wraps_HttpTimeout_SoRefresherDoesNotMistakeItForShutdown()
+    {
+        // HttpClient timeout'u TaskCanceledException olarak gelir; ham haliyle fırlarsa
+        // refresher bunu kapanma sanıp provider döngüsünü sonsuza kadar durdururdu.
+        var client = new FailingPriceClient(() => new TaskCanceledException("The request timed out."));
+
+        var act = () => client.GetMarketOverviewAsync(CancellationToken.None);
+
+        var thrown = await act.Should().ThrowAsync<ProviderFetchException>();
+        thrown.Which.InnerException.Should().BeOfType<TaskCanceledException>();
+    }
+
+    [Fact]
+    public async Task GetMarketOverviewAsync_LetsCancellationThrough_WhenAppIsShuttingDown()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var client = new FailingPriceClient(() => new OperationCanceledException(cts.Token));
+
+        var act = () => client.GetMarketOverviewAsync(cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
     [Fact]
     public async Task GetMarketOverviewAsync_DoesNotOverwrite_MapperComputedValidUntilUtc()
     {
