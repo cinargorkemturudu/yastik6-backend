@@ -147,7 +147,7 @@ public sealed class PriceSnapshotRefresher : BackgroundService
 
                 await Task.Delay(provider.RefreshInterval, stoppingToken);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
                 break;
             }

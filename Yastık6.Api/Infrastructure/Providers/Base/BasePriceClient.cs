@@ -75,6 +75,11 @@ public abstract class BasePriceClient : IPriceProvider
             // özel olarak ayarlanmış) burada bozulmadan döner; artık tek bir yerde hesaplanıyor.
             return results;
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Uygulama kapanıyor; hata değil.
+            throw;
+        }
         catch (Exception ex)
         {
             stopwatch.Stop();
@@ -82,7 +87,9 @@ public abstract class BasePriceClient : IPriceProvider
                 ProviderName, false, stopwatch.ElapsedMilliseconds);
             Tracker.ShouldSendAlert($"SYS_{ProviderName}_Api_Down");
 
-            return new List<LatestPriceResponse>();
+            // Boş liste dönersek PriceSnapshotRefresher hatayı hiç görmez: fallback ve Telegram alarmı
+            // tetiklenmez. Hatayı yukarı fırlatıyoruz ki refresher kendi catch bloğunda devreye girsin.
+            throw new ProviderFetchException(ProviderName, ex);
         }
     }
 
