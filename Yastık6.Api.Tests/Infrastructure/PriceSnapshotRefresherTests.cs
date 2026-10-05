@@ -29,9 +29,15 @@ public class PriceSnapshotRefresherTests
         Source: source
     );
 
+    // Testin primary provider'ı ne zaman düşürüp ne zaman geri getireceğini kontrol ettiği anahtar.
+    private sealed class OutageSwitch
+    {
+        public volatile bool IsDown = true;
+    }
+
     // PriceSnapshotRefresher fallback'i tip ADIYLA eşliyor ("FreeCurrencyClient" -> "YahooForexClient"),
     // bu yüzden test double'lar gerçek client'larla aynı isimleri taşıyor.
-    private sealed class FreeCurrencyClient : IPriceProvider
+    private sealed class FreeCurrencyClient(OutageSwitch outage) : IPriceProvider
     {
         public string ProviderName => "FreeCurrencyAPI";
         public bool IsMarketOpen() => true;
@@ -39,7 +45,9 @@ public class PriceSnapshotRefresherTests
         public TimeSpan MarketCloseTime => TimeSpan.Zero;
 
         public Task<List<LatestPriceResponse>> GetMarketOverviewAsync(CancellationToken ct = default)
-            => throw new ProviderFetchException(ProviderName, new HttpRequestException("Connection refused"));
+            => outage.IsDown
+                ? throw new ProviderFetchException(ProviderName, new HttpRequestException("Connection refused"))
+                : Task.FromResult(new List<LatestPriceResponse> { Price("USDTRY", "FreeCurrencyAPI") });
     }
 
     private sealed class YahooForexClient : IPriceProvider
@@ -58,54 +66,101 @@ public class PriceSnapshotRefresherTests
         public DateTime UtcNow => DateTime.UtcNow;
     }
 
-    [Fact]
-    public async Task ProviderFailure_TriggersFallback_AndSendsTelegramAlert()
+    private sealed record Harness(PriceSnapshotRefresher Refresher, PriceSnapshotStore Store, OutageSwitch Outage, AlertTracker Tracker, Func<int, Task<IReadOnlyList<string>>> WaitForAlerts, ServiceProvider Services);
+
+    private static Harness CreateHarness()
     {
-        // Arrange
         var snapshotStore = new PriceSnapshotStore();
+        var outage = new OutageSwitch();
+        var tracker = new AlertTracker();
 
         var processor = new Mock<IPriceProcessor>();
         processor
             .Setup(p => p.ProcessPricesAsync(It.IsAny<List<LatestPriceResponse>>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((List<LatestPriceResponse> raw, string _, bool _, CancellationToken _) => raw);
 
-        var alertSent = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sentAlerts = new List<string>();
         var alerts = new Mock<IAlertService>();
         alerts
             .Setup(a => a.SendAlertAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .Callback((string message, string _, CancellationToken _) => alertSent.TrySetResult(message))
+            .Callback((string message, string cacheKey, CancellationToken _) =>
+            {
+                // Gerçek TelegramAlertService gibi: anahtarlı alarmlar tracker'a "aktif" olarak düşer.
+                if (!string.IsNullOrEmpty(cacheKey)) tracker.ShouldSendAlert(cacheKey);
+                lock (sentAlerts) sentAlerts.Add(message);
+            })
             .Returns(Task.CompletedTask);
 
+        async Task<IReadOnlyList<string>> WaitForAlerts(int count)
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline)
+            {
+                lock (sentAlerts) if (sentAlerts.Count >= count) return sentAlerts.ToList();
+                await Task.Delay(20);
+            }
+            lock (sentAlerts) return sentAlerts.ToList();
+        }
+
         var services = new ServiceCollection();
+        services.AddSingleton(outage);
         services.AddTransient<IPriceProvider, FreeCurrencyClient>();
         services.AddTransient<IPriceProvider, YahooForexClient>();
         services.AddSingleton<ISystemClock, FakeSystemClock>();
         services.AddSingleton(Mock.Of<IPriceHistoryRepository>());
-        using var provider = services.BuildServiceProvider();
+        var provider = services.BuildServiceProvider();
 
         var refresher = new PriceSnapshotRefresher(
             snapshotStore,
             processor.Object,
             NullLogger<PriceSnapshotRefresher>.Instance,
             provider.GetRequiredService<IServiceScopeFactory>(),
-            alerts.Object);
-
-        // Act
-        await refresher.StartAsync(CancellationToken.None);
-        var alertMessage = await alertSent.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-        // Fallback, alarmdan hemen sonra snapshot'ı yazıyor; kısa bir süre bekle.
-        var deadline = DateTime.UtcNow.AddSeconds(5);
-        while (snapshotStore.Current == null && DateTime.UtcNow < deadline)
+            alerts.Object,
+            tracker)
         {
-            await Task.Delay(20);
-        }
+            CrashBackoff = TimeSpan.FromMilliseconds(200)
+        };
 
-        await refresher.StopAsync(CancellationToken.None);
+        return new Harness(refresher, snapshotStore, outage, tracker, WaitForAlerts, provider);
+    }
 
-        // Assert
-        alertMessage.Should().Contain("Fallback Activated").And.Contain("YahooForexClient");
-        snapshotStore.Current.Should().NotBeNull();
-        snapshotStore.Current!.Items.Should().ContainSingle(p => p.ProductCode == "USDTRY" && p.Source == "YahooForex");
+    [Fact]
+    public async Task ProviderFailure_TriggersFallback_AndSendsTelegramAlert()
+    {
+        var h = CreateHarness();
+
+        await h.Refresher.StartAsync(CancellationToken.None);
+        var alerts = await h.WaitForAlerts(1);
+        await h.Refresher.StopAsync(CancellationToken.None);
+        h.Services.Dispose();
+
+        alerts.Should().NotBeEmpty();
+        alerts[0].Should().Contain("Fallback Activated").And.Contain("YahooForexClient");
+        h.Store.Current.Should().NotBeNull();
+        h.Store.Current!.Items.Should().Contain(p => p.ProductCode == "USDTRY" && p.Source == "YahooForex");
+    }
+
+    [Fact]
+    public async Task PrimaryComingBack_SendsRecoveredAlert_Once_AndClearsOutageAlert()
+    {
+        var h = CreateHarness();
+
+        await h.Refresher.StartAsync(CancellationToken.None);
+        (await h.WaitForAlerts(1)).Should().ContainSingle(a => a.Contains("Fallback Activated"));
+
+        // Primary geri geliyor; bir sonraki denemede "Recovered" bildirimi gitmeli.
+        h.Outage.IsDown = false;
+        var alerts = await h.WaitForAlerts(2);
+
+        // Recovery yalnızca bir kez bildirilmeli (sonraki başarılı fetch'ler sessiz).
+        await Task.Delay(500);
+        alerts = await h.WaitForAlerts(2);
+        await h.Refresher.StopAsync(CancellationToken.None);
+        h.Services.Dispose();
+
+        alerts.Should().HaveCount(2);
+        alerts[1].Should().Contain("Provider Recovered").And.Contain("FreeCurrencyClient").And.Contain("back on the primary provider");
+        h.Tracker.GetCurrentSnapshot().Active.Should().NotContainKey("Fallback_FreeCurrencyClient_YahooForexClient");
+        h.Store.Current!.Items.Should().Contain(p => p.ProductCode == "USDTRY" && p.Source == "FreeCurrencyAPI");
     }
 }
