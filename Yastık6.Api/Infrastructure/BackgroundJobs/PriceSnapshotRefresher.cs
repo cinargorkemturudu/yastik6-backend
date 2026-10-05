@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Yastık6.Api.Application.Common.Interfaces;
 using Yastık6.Api.Application.Features.Prices;
 using Yastık6.Api.Domain.Entities;
@@ -13,21 +14,31 @@ public sealed class PriceSnapshotRefresher : BackgroundService
     private readonly ILogger<PriceSnapshotRefresher> _logger;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IAlertService _alertService;
+    private readonly AlertTracker _tracker;
 
     private static readonly object CacheLock = new object();
+
+    // Çökmüş provider'lar: ne zamandan beri düştükleri ve gönderilen alarmın anahtarı.
+    // Provider tekrar veri döndüğünde buradan silinip "Recovered" bildirimi atılır.
+    private readonly ConcurrentDictionary<Type, (DateTimeOffset Since, string AlertKey)> _downProviders = new();
+
+    // Çöken provider bir sonraki denemeden önce bu kadar bekler. Testler kısaltabilsin diye init.
+    public TimeSpan CrashBackoff { get; init; } = TimeSpan.FromMinutes(5);
 
     public PriceSnapshotRefresher(
         IPriceSnapshotStore snapshotStore,
         IPriceProcessor priceProcessor,
         ILogger<PriceSnapshotRefresher> logger,
         IServiceScopeFactory scopeFactory,
-        IAlertService alertService)
+        IAlertService alertService,
+        AlertTracker tracker)
     {
         _snapshotStore = snapshotStore;
         _priceProcessor = priceProcessor;
         _logger = logger;
         _scopeFactory = scopeFactory;
         _alertService = alertService;
+        _tracker = tracker;
     }
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
@@ -82,6 +93,8 @@ public sealed class PriceSnapshotRefresher : BackgroundService
 
                 if (rawPrices.Count > 0)
                 {
+                    await NotifyRecoveryIfNeededAsync(providerType, stoppingToken);
+
                     var verifiedPrices = await _priceProcessor.ProcessPricesAsync(rawPrices, provider.ProviderName, isMarketOpen, stoppingToken);
 
                     if (verifiedPrices.Count == 0)
@@ -164,6 +177,8 @@ public sealed class PriceSnapshotRefresher : BackgroundService
 
                 if (fallbackProviderName != null)
                 {
+                    _downProviders.TryAdd(providerType, (DateTimeOffset.UtcNow, $"Fallback_{providerType.Name}_{fallbackProviderName}"));
+
                     _logger.LogWarning("{Provider} failed! Triggering immediate fallback to {Fallback}...", providerType.Name, fallbackProviderName);
 
                     await _alertService.SendAlertAsync(
@@ -183,15 +198,37 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                 }
                 else
                 {
+                    _downProviders.TryAdd(providerType, (DateTimeOffset.UtcNow, $"Snapshot_{providerType.Name}_{ex.GetType().Name}"));
+
                     await _alertService.SendAlertAsync(
                         $"⚠️ *Provider Crashed: {providerType.Name}*\nTime: `{DateTime.UtcNow:HH:mm:ss} UTC`\nError: `{ex.Message}`",
                         $"Snapshot_{providerType.Name}_{ex.GetType().Name}",
                         stoppingToken);
                 }
 
-                await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken);
+                await Task.Delay(CrashBackoff, stoppingToken);
             }
         }
+    }
+
+    private async Task NotifyRecoveryIfNeededAsync(Type providerType, CancellationToken stoppingToken)
+    {
+        if (!_downProviders.TryRemove(providerType, out var outage)) return;
+
+        var downtime = DateTimeOffset.UtcNow - outage.Since;
+
+        // Susturucuyu sıfırla: provider tekrar düşerse ilk alarm 1 saat beklemeden gitsin.
+        _tracker.MarkAsResolved(outage.AlertKey);
+
+        _logger.LogInformation("{Provider} recovered after {DowntimeSeconds:F0}s of downtime.",
+            providerType.Name, downtime.TotalSeconds);
+
+        var trafficNote = outage.AlertKey.StartsWith("Fallback_") ? " Traffic is back on the primary provider." : string.Empty;
+
+        await _alertService.SendAlertAsync(
+            $"✅ *Provider Recovered*\n`{providerType.Name}` is back online after `{(int)downtime.TotalMinutes}m {downtime.Seconds}s` of downtime.{trafficNote}",
+            null,
+            stoppingToken);
     }
 
     private async Task ExecuteFallbackAsync(string fallbackProviderName, CancellationToken stoppingToken)
