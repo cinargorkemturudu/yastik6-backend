@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Yastık6.Api.Infrastructure.Alerts;
 
 namespace Yastık6.Api.Application.Features.Prices;
@@ -10,6 +11,13 @@ public sealed class PriceShieldValidator
     private readonly ILogger<PriceShieldValidator> _logger;
     private readonly IAlertService _alertService;
     private readonly AlertTracker _tracker; // [YENİ]: Akıllı Defteri Kalkana Taktık
+
+    // A >40% jump is rejected as a glitch, but if the next readings keep agreeing on the new level
+    // it is a real move (e.g. a crypto crash, or a cached price that went stale). Without this the
+    // symbol would stay frozen on the old price until the app restarts.
+    public const int ConfirmationsToReanchor = 3;
+    public const decimal ConfirmationTolerancePercent = 5m;
+    private readonly ConcurrentDictionary<string, (decimal Ask, int Count)> _pendingMoves = new();
 
     public PriceShieldValidator(ILogger<PriceShieldValidator> logger, IAlertService alertService, AlertTracker tracker)
     {
@@ -50,6 +58,19 @@ public sealed class PriceShieldValidator
 
             if (instantChange > 40m)
             {
+                if (ConfirmsPendingMove(newPrice))
+                {
+                    _pendingMoves.TryRemove(newPrice.ProductCode, out _);
+                    _logger.LogWarning("[SHIELD RE-ANCHOR] {Code} moved %{Rate:N2} and held for {Count} readings; accepting the new price. Old: {Old}, New: {New}",
+                        newPrice.ProductCode, instantChange, ConfirmationsToReanchor, existingPrice.Ask, newPrice.Ask);
+
+                    await _alertService.SendAlertAsync(
+                        $"♻️ *PRICE RE-ANCHORED*\nSymbol: `{newPrice.ProductCode}`\nOld: `{existingPrice.Ask}`\nNew: `{newPrice.Ask}`\n_{ConfirmationsToReanchor} tutarlı okuma sonrası yeni fiyat kabul edildi._",
+                        $"Reanchor_{newPrice.ProductCode}",
+                        ct);
+                    return true;
+                }
+
                 var cacheKey = $"FlashCrash_{newPrice.ProductCode}";
 
                 // [ZEKA EKLENDİ]: Çöküş raporunu da 1 saatlik susturucuya bağladık
@@ -68,6 +89,23 @@ public sealed class PriceShieldValidator
             }
         }
 
+        _pendingMoves.TryRemove(newPrice.ProductCode, out _);
         return true;
+    }
+
+    /// <summary>
+    /// Records a rejected jump and returns true once <see cref="ConfirmationsToReanchor"/> consecutive
+    /// readings have landed within <see cref="ConfirmationTolerancePercent"/> of each other.
+    /// </summary>
+    private bool ConfirmsPendingMove(LatestPriceResponse newPrice)
+    {
+        var pending = _pendingMoves.AddOrUpdate(
+            newPrice.ProductCode,
+            _ => (newPrice.Ask, 1),
+            (_, previous) => Math.Abs((newPrice.Ask - previous.Ask) / previous.Ask * 100m) <= ConfirmationTolerancePercent
+                ? (newPrice.Ask, previous.Count + 1)
+                : (newPrice.Ask, 1));
+
+        return pending.Count >= ConfirmationsToReanchor;
     }
 }
