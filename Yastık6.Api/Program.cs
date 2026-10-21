@@ -112,7 +112,10 @@ try
                 factory: partition => new SlidingWindowRateLimiterOptions
                 {
                     Window = TimeSpan.FromMinutes(1),
-                    PermitLimit = 60,
+                    // The app polls every 10s (6 req/min), and Turkish mobile carriers put many users
+                    // behind one CGNAT IP, so 60/min would start returning 429s at ~10 users per IP.
+                    // 600/min leaves room for ~100; responses come from RAM, so this is cheap to serve.
+                    PermitLimit = 600,
                     SegmentsPerWindow = 3,
                     QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
                     QueueLimit = 2
