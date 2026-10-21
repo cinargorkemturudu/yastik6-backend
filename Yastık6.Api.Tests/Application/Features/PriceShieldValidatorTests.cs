@@ -103,4 +103,47 @@ public class PriceShieldValidatorTests
         alertServiceMock.Verify(a => a.SendAlertAsync(
             It.IsAny<string>(), "ZeroPrice_GRAM_ALTIN", It.IsAny<CancellationToken>()), Times.Once);
     }
+
+    [Fact]
+    public async Task ValidatePriceAsync_ReanchorsAfterConsistentReadings_InsteadOfFreezingForever()
+    {
+        var validator = CreateValidator(out var alertServiceMock);
+        var existingPrice = MakePrice("BTC-USD", bid: 100m, ask: 100m, source: "Binance");
+
+        // A real 50% crash that persists: the first readings are rejected as a possible glitch...
+        (await validator.ValidatePriceAsync(MakePrice("BTC-USD", 50m, 50m, "Binance"), existingPrice, default)).Should().BeFalse();
+        (await validator.ValidatePriceAsync(MakePrice("BTC-USD", 51m, 51m, "Binance"), existingPrice, default)).Should().BeFalse();
+        // ...and the third consistent reading is accepted as the new reality
+        (await validator.ValidatePriceAsync(MakePrice("BTC-USD", 50.5m, 50.5m, "Binance"), existingPrice, default)).Should().BeTrue();
+
+        alertServiceMock.Verify(a => a.SendAlertAsync(
+            It.IsAny<string>(), "Reanchor_BTC-USD", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ValidatePriceAsync_SingleSpike_IsNotReanchored_AndNormalReadingResetsTheCount()
+    {
+        var validator = CreateValidator(out _);
+        var existingPrice = MakePrice("GRAM_ALTIN", bid: 100m, ask: 100m);
+
+        (await validator.ValidatePriceAsync(MakePrice("GRAM_ALTIN", 10m, 10m), existingPrice, default)).Should().BeFalse();
+        (await validator.ValidatePriceAsync(MakePrice("GRAM_ALTIN", 10m, 10m), existingPrice, default)).Should().BeFalse();
+        // A normal reading in between clears the suspicion...
+        (await validator.ValidatePriceAsync(MakePrice("GRAM_ALTIN", 101m, 101m), existingPrice, default)).Should().BeTrue();
+        // ...so the next glitch starts counting from zero again
+        (await validator.ValidatePriceAsync(MakePrice("GRAM_ALTIN", 10m, 10m), existingPrice, default)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ValidatePriceAsync_InconsistentGarbage_NeverReanchors()
+    {
+        var validator = CreateValidator(out _);
+        var existingPrice = MakePrice("GRAM_ALTIN", bid: 100m, ask: 100m);
+
+        foreach (var glitch in new[] { 10m, 300m, 20m, 500m, 5m, 250m })
+        {
+            (await validator.ValidatePriceAsync(MakePrice("GRAM_ALTIN", glitch, glitch), existingPrice, default))
+                .Should().BeFalse($"{glitch} does not agree with the previous reading");
+        }
+    }
 }
