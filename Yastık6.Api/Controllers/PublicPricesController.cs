@@ -1,6 +1,5 @@
 using FluentValidation;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.RateLimiting;
 using Yastık6.Api.Application.Features.Prices;
 using Yastık6.Api.Infrastructure.Caching;
 using Yastık6.Api.Infrastructure.RateLimiting;
@@ -9,12 +8,12 @@ namespace Yastık6.Api.Controllers;
 
 /// <summary>
 /// Keyless, read-only view of the live price API for people evaluating the project.
-/// Serves the same in-memory snapshot as the mobile app, behind a much stricter rate limit.
+/// Serves the same in-memory snapshot as the mobile app. Rate limits live in PublicDemoLimiter
+/// (the global limiter), so they also cover the Swagger page's files.
 /// </summary>
 [ApiController]
 [Route("api/public")]
 [ApiExplorerSettings(GroupName = PublicApiInfo.DocumentName)]
-[EnableRateLimiting(RateLimitPolicies.PublicDemo)]
 [Produces("application/json")]
 public sealed class PublicPricesController : ControllerBase
 {
@@ -33,6 +32,7 @@ public sealed class PublicPricesController : ControllerBase
 
     /// <summary>Lists the public endpoints, valid product codes and the rate limit.</summary>
     [HttpGet]
+    [ResponseCache(Duration = 60, Location = ResponseCacheLocation.Any)]
     [ProducesResponseType<PublicApiIndex>(StatusCodes.Status200OK)]
     public ActionResult<PublicApiIndex> GetIndex([FromServices] IConfiguration configuration)
     {
@@ -54,6 +54,7 @@ public sealed class PublicPricesController : ControllerBase
     /// <summary>Latest bid/ask for every tracked asset (gold, currencies, BIST stocks, crypto).</summary>
     /// <remarks>Served from RAM; a background worker refreshes it every few seconds from Harem, Binance, Yahoo and FreeCurrency.</remarks>
     [HttpGet("market")]
+    [ResponseCache(Duration = 10, Location = ResponseCacheLocation.Any)]
     [ProducesResponseType<LatestPricesResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     public ActionResult<LatestPricesResponse> GetMarket()
@@ -71,8 +72,10 @@ public sealed class PublicPricesController : ControllerBase
     /// <param name="validator">Shared validator used by the mobile app's history endpoint.</param>
     /// <param name="ct">Request cancellation.</param>
     [HttpGet("history/{productCode}")]
+    [ResponseCache(Duration = 60, Location = ResponseCacheLocation.Any)]
     [ProducesResponseType<PriceHistoryResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     public async Task<ActionResult<PriceHistoryResponse>> GetHistory(
         string productCode,
@@ -90,6 +93,13 @@ public sealed class PublicPricesController : ControllerBase
         if (!AllowedHistoryRanges.Contains(range))
         {
             return BadRequest(new[] { "The public API serves Day, Week and Month ranges only." });
+        }
+
+        // Unknown codes never reach the database. A cache miss in PriceService takes a lock shared
+        // with the mobile app's history requests, so random codes must not be able to queue there.
+        if (_store.Current?.Items.Any(i => i.ProductCode == productCode) != true)
+        {
+            return NotFound(new[] { $"Unknown product code '{productCode}'. GET {RateLimitPolicies.PublicPathPrefix} lists the valid codes." });
         }
 
         var result = await _ps.GetHistoryAsync(productCode, range, ct);
@@ -117,5 +127,8 @@ public static class PublicApiInfo
         configuration.GetValue("PublicApi:PermitPerIpPerMinute", 30);
 
     public static int GlobalPermitPerMinute(IConfiguration configuration) =>
-        configuration.GetValue("PublicApi:GlobalPermitPerMinute", 300);
+        configuration.GetValue("PublicApi:GlobalPermitPerMinute", 120);
+
+    public static bool IsEnabled(IConfiguration configuration) =>
+        configuration.GetValue("PublicApi:Enabled", true);
 }

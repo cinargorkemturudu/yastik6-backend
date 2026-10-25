@@ -121,6 +121,10 @@ try
         });
     });
 
+    var publicDemoLimiter = new PublicDemoLimiter(
+        PublicApiInfo.PermitPerIpPerMinute(builder.Configuration),
+        PublicApiInfo.GlobalPermitPerMinute(builder.Configuration));
+
     // Rate Limiter "SlidingWindow" ayarları
     builder.Services.AddRateLimiter(options =>
     {
@@ -139,30 +143,10 @@ try
                     QueueLimit = 2
                 }));
 
-        // Keyless demo routes: a small per-visitor budget, enough to click around Swagger or run curl.
-        var publicPermitPerIp = PublicApiInfo.PermitPerIpPerMinute(builder.Configuration);
-        options.AddPolicy(RateLimitPolicies.PublicDemo, httpContext =>
-            RateLimitPartition.GetFixedWindowLimiter(
-                partitionKey: ClientIpResolver.Resolve(httpContext),
-                factory: _ => new FixedWindowRateLimiterOptions
-                {
-                    Window = TimeSpan.FromMinutes(1),
-                    PermitLimit = publicPermitPerIp,
-                    QueueLimit = 0
-                }));
-
-        // A shared ceiling across all visitors of the demo routes, so many IPs (or a forged
-        // CF-Connecting-IP) can't add up to real load. Mobile app routes are never counted here.
-        var publicGlobalPermit = PublicApiInfo.GlobalPermitPerMinute(builder.Configuration);
-        options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
-            httpContext.Request.Path.StartsWithSegments(RateLimitPolicies.PublicPathPrefix)
-                ? RateLimitPartition.GetFixedWindowLimiter("public-demo-all", _ => new FixedWindowRateLimiterOptions
-                {
-                    Window = TimeSpan.FromMinutes(1),
-                    PermitLimit = publicGlobalPermit,
-                    QueueLimit = 0
-                })
-                : RateLimitPartition.GetNoLimiter("unlimited"));
+        // Keyless /api/public routes and their Swagger page: a small budget per visitor plus a shared
+        // ceiling. At ~380 KB per uncompressed market response, 120/min caps a sustained flood at
+        // roughly 2 TB/month of egress, inside the server's free allowance.
+        options.GlobalLimiter = publicDemoLimiter.Limiter;
 
         options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
         options.OnRejected = async (context, ct) =>
@@ -174,6 +158,18 @@ try
 
             await context.HttpContext.Response.WriteAsJsonAsync(
                 new { error = "Too many requests. Please slow down and retry shortly." }, ct);
+
+            if (PublicDemoLimiter.IsPublic(context.HttpContext) &&
+                publicDemoLimiter.IsSharedCeilingExhausted(context.HttpContext) &&
+                publicDemoLimiter.TryClaimAlert(DateTimeOffset.UtcNow))
+            {
+                var alertService = context.HttpContext.RequestServices.GetRequiredService<IAlertService>();
+                await alertService.SendAlertAsync(
+                    $"⚠️ Public demo API hit its shared limit ({PublicApiInfo.GlobalPermitPerMinute(builder.Configuration)}/min). " +
+                    "Visitors are getting 429s; the mobile app is unaffected. Muted for 1 hour. " +
+                    "To switch the public tier off: PublicApi__Enabled=false in .env, then restart.",
+                    null, ct);
+            }
         };
     });
 
@@ -249,6 +245,14 @@ try
         // Sadece HTTP 400 ve üstü hatalar Seq'e Warning olarak düşer.
         options.GetLevel = (httpContext, elapsed, ex) =>
         {
+            // A flood against the public demo would otherwise write one Warning per rejected request
+            // into Seq and the log files. The shared-limit Telegram alert reports it instead.
+            if (ex == null && httpContext.Response.StatusCode == StatusCodes.Status429TooManyRequests &&
+                PublicDemoLimiter.IsPublic(httpContext))
+            {
+                return Serilog.Events.LogEventLevel.Debug;
+            }
+
             return ex != null || httpContext.Response.StatusCode >= 400
                 ? Serilog.Events.LogEventLevel.Warning
                 : Serilog.Events.LogEventLevel.Debug;
@@ -256,6 +260,22 @@ try
     });
 
     app.UseResponseCompression();
+
+    // Kill switch for the keyless tier: PublicApi__Enabled=false in .env, then restart the container.
+    var publicApiEnabled = PublicApiInfo.IsEnabled(app.Configuration);
+    app.Use(async (context, next) =>
+    {
+        if (!publicApiEnabled && PublicDemoLimiter.IsPublic(context))
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+        await next(context);
+    });
+
+    // Before Swagger, so the public docs' files count against the public limits too.
+    app.UseRateLimiter();
+
     app.UseSwagger();
     app.UseSwaggerUI();
 
@@ -270,8 +290,6 @@ try
         c.SwaggerEndpoint($"{RateLimitPolicies.PublicPathPrefix}/openapi.json", "Yastık6 Public API");
         c.DocumentTitle = "Yastık6 Public API";
     });
-
-    app.UseRateLimiter();
 
     // --- İHANET ALARMI (SECURITY SHIELD) MIDDLEWARE ---
     app.Use(async (context, next) =>

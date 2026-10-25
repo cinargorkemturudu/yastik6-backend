@@ -25,7 +25,7 @@ public class GetHistoryValidatorTests
 
         // Assert
         result.ShouldHaveValidationErrorFor(x => x.productCode)
-            .WithErrorMessage("Ürün kodu boş olamaz.");
+            .WithErrorMessage("Product code is required.");
     }
 
     [Fact]
@@ -39,7 +39,7 @@ public class GetHistoryValidatorTests
 
         // Assert
         result.ShouldHaveValidationErrorFor(x => x.productCode)
-              .WithErrorMessage("Ürün kodu 20 karakterden uzun olamaz.");
+              .WithErrorMessage("Product code must be 20 characters or fewer.");
     }
 
     [Theory]
@@ -54,7 +54,7 @@ public class GetHistoryValidatorTests
 
         // Assert
         result.ShouldHaveValidationErrorFor(x => x.productCode)
-              .WithErrorMessage("Ürün kodu geçersiz formatta.");
+              .WithErrorMessage("Product code may only contain A-Z, 0-9 and _ - . =");
     }
 
     [Fact]
@@ -68,7 +68,7 @@ public class GetHistoryValidatorTests
 
         // Assert
         result.ShouldHaveValidationErrorFor(x => x.range)
-              .WithErrorMessage("Geçersiz zaman aralığı.");
+              .WithErrorMessage("Invalid range.");
     }
 
     [Theory]
