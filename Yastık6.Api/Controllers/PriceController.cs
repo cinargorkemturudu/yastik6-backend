@@ -1,15 +1,18 @@
 using FluentValidation;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Hosting;
 using Yastık6.Api.Application.Features.Prices;
 using Yastık6.Api.Domain.Entities;
 using Yastık6.Api.Infrastructure.Caching;
 using Yastık6.Api.Infrastructure.Persistence;
+using Yastık6.Api.Infrastructure.RateLimiting;
 
 namespace Yastık6.Api.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
+[EnableRateLimiting(RateLimitPolicies.MobileApp)]
 public sealed class PricesController : ControllerBase
 {
     private readonly IPriceService _ps;

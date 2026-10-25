@@ -9,6 +9,8 @@ using Yastık6.Api.ApplicationConfig;
 using Yastık6.Api.Infrastructure.Alerts;
 using Yastık6.Api.Infrastructure.BackgroundJobs;
 using Yastık6.Api.Infrastructure.Persistence;
+using Yastık6.Api.Infrastructure.RateLimiting;
+using Yastık6.Api.Controllers;
 
 // Bootstrap Serilog at the earliest possible stage to ensure robust error logging
 Log.Logger = new LoggerConfiguration()
@@ -85,7 +87,23 @@ try
 
     builder.Services.AddSwaggerGen(c =>
     {
+        c.SwaggerDoc("v1", new Microsoft.OpenApi.OpenApiInfo { Title = "Yastık6 API", Version = "v1" });
+        c.SwaggerDoc(PublicApiInfo.DocumentName, new Microsoft.OpenApi.OpenApiInfo
+        {
+            Title = "Yastık6 Public API",
+            Version = "v1",
+            Description = "Live market data behind the Yastık6 app: Turkish gold, currencies, BIST stocks and crypto. " +
+                          $"No key needed. {PublicApiInfo.PermitPerIpPerMinute(builder.Configuration)} requests per minute per IP. " +
+                          PublicApiInfo.Disclaimer
+        });
+
+        // The full doc lists everything; the public doc lists only the keyless controller.
+        c.DocInclusionPredicate((docName, api) =>
+            docName != PublicApiInfo.DocumentName || api.GroupName == PublicApiInfo.DocumentName);
+
+        c.IncludeXmlComments(Path.Combine(AppContext.BaseDirectory, $"{typeof(Program).Assembly.GetName().Name}.xml"));
         c.OperationFilter<Yastık6.Api.Infrastructure.Swagger.ApiKeyHeaderFilter>();
+        c.ParameterFilter<Yastık6.Api.Infrastructure.Swagger.PublicHistoryRangeFilter>();
     });
 
     // Herkese açık CORS ("AllowAll") yerine katı CORS (StrictCors) politikası
@@ -106,7 +124,7 @@ try
     // Rate Limiter "SlidingWindow" ayarları
     builder.Services.AddRateLimiter(options =>
     {
-        options.AddPolicy("PublicApi", httpContext =>
+        options.AddPolicy(RateLimitPolicies.MobileApp, httpContext =>
             RateLimitPartition.GetSlidingWindowLimiter(
                 partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
                 factory: partition => new SlidingWindowRateLimiterOptions
@@ -121,7 +139,42 @@ try
                     QueueLimit = 2
                 }));
 
+        // Keyless demo routes: a small per-visitor budget, enough to click around Swagger or run curl.
+        var publicPermitPerIp = PublicApiInfo.PermitPerIpPerMinute(builder.Configuration);
+        options.AddPolicy(RateLimitPolicies.PublicDemo, httpContext =>
+            RateLimitPartition.GetFixedWindowLimiter(
+                partitionKey: ClientIpResolver.Resolve(httpContext),
+                factory: _ => new FixedWindowRateLimiterOptions
+                {
+                    Window = TimeSpan.FromMinutes(1),
+                    PermitLimit = publicPermitPerIp,
+                    QueueLimit = 0
+                }));
+
+        // A shared ceiling across all visitors of the demo routes, so many IPs (or a forged
+        // CF-Connecting-IP) can't add up to real load. Mobile app routes are never counted here.
+        var publicGlobalPermit = PublicApiInfo.GlobalPermitPerMinute(builder.Configuration);
+        options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+            httpContext.Request.Path.StartsWithSegments(RateLimitPolicies.PublicPathPrefix)
+                ? RateLimitPartition.GetFixedWindowLimiter("public-demo-all", _ => new FixedWindowRateLimiterOptions
+                {
+                    Window = TimeSpan.FromMinutes(1),
+                    PermitLimit = publicGlobalPermit,
+                    QueueLimit = 0
+                })
+                : RateLimitPartition.GetNoLimiter("unlimited"));
+
         options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+        options.OnRejected = async (context, ct) =>
+        {
+            if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
+            {
+                context.HttpContext.Response.Headers.RetryAfter = ((int)Math.Ceiling(retryAfter.TotalSeconds)).ToString();
+            }
+
+            await context.HttpContext.Response.WriteAsJsonAsync(
+                new { error = "Too many requests. Please slow down and retry shortly." }, ct);
+        };
     });
 
     // Register Health Checks for system monitoring
@@ -205,6 +258,19 @@ try
     app.UseResponseCompression();
     app.UseSwagger();
     app.UseSwaggerUI();
+
+    // Public docs live under /api/public because nginx only forwards /api/* to this app.
+    // The path check guarantees only the public document can be served from here.
+    app.UseWhen(
+        context => context.Request.Path.Equals($"{RateLimitPolicies.PublicPathPrefix}/openapi.json"),
+        branch => branch.UseSwagger(o => o.RouteTemplate = "api/{documentName}/openapi.json"));
+    app.UseSwaggerUI(c =>
+    {
+        c.RoutePrefix = "api/public/docs";
+        c.SwaggerEndpoint($"{RateLimitPolicies.PublicPathPrefix}/openapi.json", "Yastık6 Public API");
+        c.DocumentTitle = "Yastık6 Public API";
+    });
+
     app.UseRateLimiter();
 
     // --- İHANET ALARMI (SECURITY SHIELD) MIDDLEWARE ---
@@ -265,7 +331,8 @@ try
             return;
         }
 
-        if (context.Request.Path.StartsWithSegments("/api/health"))
+        if (context.Request.Path.StartsWithSegments("/api/health") ||
+            context.Request.Path.StartsWithSegments(RateLimitPolicies.PublicPathPrefix))
         {
             await next(context);
             return;
@@ -283,7 +350,9 @@ try
     });
 
     app.MapHealthChecks("/api/health");
-    app.MapControllers().RequireRateLimiting("PublicApi");
+    // Each controller names its own rate-limit policy ([EnableRateLimiting]), so the mobile and
+    // public budgets can't override each other.
+    app.MapControllers();
 
     // --- DATABASE SEEDING PROCESS ---
     using (var scope = app.Services.CreateScope())
@@ -334,3 +403,6 @@ finally
 {
     Log.CloseAndFlush(); // Log havuzundaki verilerin diske ve Seq'e tamamen yazıldığından emin olup kapatır
 }
+
+// Lets the integration tests boot the real pipeline with WebApplicationFactory<Program>.
+public partial class Program;
