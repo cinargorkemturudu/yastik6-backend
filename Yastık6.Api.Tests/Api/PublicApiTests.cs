@@ -7,6 +7,8 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Yastık6.Api.Application.Features.Prices;
+using Yastık6.Api.Infrastructure.Caching;
 
 namespace Yastık6.Api.Tests.Api;
 
@@ -16,12 +18,24 @@ public sealed class PublicApiFactory : WebApplicationFactory<Program>
 {
     private readonly int _permitPerIp;
     private readonly int _globalPermit;
+    private readonly bool _enabled;
     private readonly string _dbPath = Path.Combine(Path.GetTempPath(), $"yastik6-test-{Guid.NewGuid():N}.db");
 
-    public PublicApiFactory(int permitPerIp = 3, int globalPermit = 100)
+    public PublicApiFactory(int permitPerIp = 3, int globalPermit = 100, bool enabled = true)
     {
         _permitPerIp = permitPerIp;
         _globalPermit = globalPermit;
+        _enabled = enabled;
+    }
+
+    // The snapshot is normally filled by a background worker, which the tests remove.
+    public void SeedSnapshot(params string[] productCodes)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var items = productCodes
+            .Select(code => new LatestPriceResponse(code, code, "GOLD", 1m, 1m, 1m, 0m, "1", "1", now, now.AddMinutes(1), "Test"))
+            .ToList();
+        Services.GetRequiredService<IPriceSnapshotStore>().Set(new LatestPricesResponse(items, now));
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -34,6 +48,7 @@ public sealed class PublicApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("Serilog:SeqServerUrl", "http://localhost:1");
         builder.UseSetting("PublicApi:PermitPerIpPerMinute", _permitPerIp.ToString());
         builder.UseSetting("PublicApi:GlobalPermitPerMinute", _globalPermit.ToString());
+        builder.UseSetting("PublicApi:Enabled", _enabled.ToString());
 
         builder.ConfigureTestServices(services => services.RemoveAll<IHostedService>());
     }
@@ -101,10 +116,76 @@ public class PublicApiTests
     {
         using var factory = new PublicApiFactory();
         var client = factory.CreateClient();
+        factory.SeedSnapshot("GRAM_ALTIN");
 
         var response = await client.SendAsync(Get("/api/public/history/GRAM_ALTIN?range=Day", "203.0.113.4"));
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task PublicHistory_UnknownProductCode_Returns404()
+    {
+        using var factory = new PublicApiFactory();
+        var client = factory.CreateClient();
+        factory.SeedSnapshot("GRAM_ALTIN");
+
+        var response = await client.SendAsync(Get("/api/public/history/NOT_A_CODE?range=Day", "203.0.113.6"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task PublicMarket_SetsCacheControl()
+    {
+        using var factory = new PublicApiFactory();
+        var client = factory.CreateClient();
+
+        var response = await client.SendAsync(Get("/api/public/market", "203.0.113.8"));
+
+        response.Headers.CacheControl!.Public.Should().BeTrue();
+        response.Headers.CacheControl.MaxAge.Should().Be(TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
+    public async Task KillSwitch_Off_HidesPublicRoutesAndDocs_ButNotTheMobileApi()
+    {
+        using var factory = new PublicApiFactory(enabled: false);
+        var client = factory.CreateClient();
+
+        (await client.SendAsync(Get("/api/public/market", "203.0.113.9"))).StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await client.SendAsync(Get("/api/public/docs/index.html", "203.0.113.9"))).StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await client.SendAsync(Get("/api/prices/market", "203.0.113.9", MobileKey))).StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task DocsPageFiles_CountAgainstThePerIpLimit()
+    {
+        using var factory = new PublicApiFactory(permitPerIp: 2);
+        var client = factory.CreateClient();
+
+        for (var i = 0; i < 2; i++)
+        {
+            (await client.SendAsync(Get("/api/public/docs/index.html", "203.0.113.30"))).StatusCode.Should().Be(HttpStatusCode.OK);
+        }
+
+        var response = await client.SendAsync(Get("/api/public", "203.0.113.30"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.TooManyRequests);
+    }
+
+    [Fact]
+    public async Task Ipv6Visitor_RotatingAddressesInsideOneSlash64_SharesOneLimit()
+    {
+        using var factory = new PublicApiFactory(permitPerIp: 2);
+        var client = factory.CreateClient();
+
+        (await client.SendAsync(Get("/api/public", "2001:db8:1:2::1"))).StatusCode.Should().Be(HttpStatusCode.OK);
+        (await client.SendAsync(Get("/api/public", "2001:db8:1:2::2"))).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var response = await client.SendAsync(Get("/api/public", "2001:db8:1:2:ffff::3"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.TooManyRequests);
     }
 
     [Fact]

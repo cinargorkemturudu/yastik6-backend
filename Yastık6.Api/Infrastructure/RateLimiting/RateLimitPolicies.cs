@@ -5,8 +5,6 @@ public static class RateLimitPolicies
     // Mobile app traffic (keyed routes).
     public const string MobileApp = "PublicApi";
 
-    // Open, keyless routes under /api/public for people evaluating the project.
-    public const string PublicDemo = "PublicDemo";
-
+    // Open, keyless routes for people evaluating the project; limited by PublicDemoLimiter.
     public const string PublicPathPrefix = "/api/public";
 }
