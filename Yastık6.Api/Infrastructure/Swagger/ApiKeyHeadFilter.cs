@@ -7,6 +7,12 @@ public class ApiKeyHeaderFilter : IOperationFilter
 {
     public void Apply(OpenApiOperation operation, OperationFilterContext context)
     {
+        // Public endpoints are keyless; showing a required key box there would confuse visitors.
+        if (context.ApiDescription.GroupName == Yastık6.Api.Controllers.PublicApiInfo.DocumentName)
+        {
+            return;
+        }
+
         // Eğer metodun hiç parametresi yoksa listeyi başlat
         operation.Parameters ??= new List<IOpenApiParameter>();
 
@@ -19,7 +25,8 @@ public class ApiKeyHeaderFilter : IOperationFilter
             Required = true, // Reviewer'ın boş geçmesini engeller
             Schema = new OpenApiSchema
             {
-                Type = JsonSchemaType.String            }
+                Type = JsonSchemaType.String
+            }
         });
     }
 }
