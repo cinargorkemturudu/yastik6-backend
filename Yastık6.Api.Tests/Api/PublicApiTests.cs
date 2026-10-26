@@ -49,6 +49,7 @@ public sealed class PublicApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("PublicApi:PermitPerIpPerMinute", _permitPerIp.ToString());
         builder.UseSetting("PublicApi:GlobalPermitPerMinute", _globalPermit.ToString());
         builder.UseSetting("PublicApi:Enabled", _enabled.ToString());
+        builder.UseSetting("ApiSettings:SwaggerKey", PublicApiTests.SwaggerKey);
 
         builder.ConfigureTestServices(services => services.RemoveAll<IHostedService>());
     }
@@ -67,6 +68,7 @@ public sealed class PublicApiFactory : WebApplicationFactory<Program>
 public class PublicApiTests
 {
     public const string MobileKey = "test-mobile-key";
+    public const string SwaggerKey = "test-swagger-key";
 
     private static HttpRequestMessage Get(string url, string ip, string? mobileKey = null)
     {
@@ -272,5 +274,30 @@ public class PublicApiTests
         var response = await client.GetAsync("/api/v1/openapi.json");
 
         response.StatusCode.Should().NotBe(HttpStatusCode.OK);
+    }
+
+    [Theory]
+    [InlineData("/swagger/v1/swagger.json")]
+    [InlineData("/swagger/index.html")]
+    [InlineData("/swagger/v1/swagger.json?key=wrong")]
+    public async Task PrivateSwagger_WithoutTheRightKey_Returns404(string url)
+    {
+        using var factory = new PublicApiFactory();
+        var client = factory.CreateClient();
+
+        var response = await client.GetAsync(url);
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task PrivateSwagger_WithTheKey_Returns200()
+    {
+        using var factory = new PublicApiFactory();
+        var client = factory.CreateClient();
+
+        var response = await client.GetAsync($"/swagger/v1/swagger.json?key={SwaggerKey}");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 }
