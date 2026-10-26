@@ -276,6 +276,23 @@ try
     // Before Swagger, so the public docs' files count against the public limits too.
     app.UseRateLimiter();
 
+    // The private docs need ?key= outside Development. This has to run before UseSwagger,
+    // which answers /swagger/* itself and never calls the middleware after it.
+    app.Use(async (context, next) =>
+    {
+        if (context.Request.Path.StartsWithSegments("/swagger") && !app.Environment.IsDevelopment())
+        {
+            var swaggerKey = app.Configuration["ApiSettings:SwaggerKey"];
+
+            if (string.IsNullOrEmpty(swaggerKey) || context.Request.Query["key"] != swaggerKey)
+            {
+                context.Response.StatusCode = StatusCodes.Status404NotFound;
+                return;
+            }
+        }
+        await next(context);
+    });
+
     app.UseSwagger();
     app.UseSwaggerUI();
 
@@ -333,22 +350,6 @@ try
     // Mobile Client Verification & Security Middleware
     app.Use(async (context, next) =>
     {
-        if (context.Request.Path.StartsWithSegments("/swagger"))
-        {
-            if (!app.Environment.IsDevelopment())
-            {
-                var swaggerKey = app.Configuration["ApiSettings:SwaggerKey"];
-
-                if (string.IsNullOrEmpty(swaggerKey) || context.Request.Query["key"] != swaggerKey)
-                {
-                    context.Response.StatusCode = StatusCodes.Status404NotFound;
-                    return;
-                }
-            }
-            await next(context);
-            return;
-        }
-
         if (context.Request.Path.StartsWithSegments("/api/health") ||
             context.Request.Path.StartsWithSegments(RateLimitPolicies.PublicPathPrefix))
         {
