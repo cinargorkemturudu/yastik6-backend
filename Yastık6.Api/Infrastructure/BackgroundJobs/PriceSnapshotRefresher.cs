@@ -25,6 +25,10 @@ public sealed class PriceSnapshotRefresher : BackgroundService
     // Çöken provider bir sonraki denemeden önce bu kadar bekler. Testler kısaltabilsin diye init.
     public TimeSpan CrashBackoff { get; init; } = TimeSpan.FromMinutes(5);
 
+    // Geçerlilik süresi bu kadar önce dolmuş (piyasa açıkken kaydedilmiş) fiyatlar snapshot'tan silinir.
+    // Kısa bir provider kesintisi fiyatları yok etmesin diye uzun tutuldu. Testler kısaltabilsin diye init.
+    public TimeSpan StaleEvictionAge { get; init; } = TimeSpan.FromHours(24);
+
     public PriceSnapshotRefresher(
         IPriceSnapshotStore snapshotStore,
         IPriceProcessor priceProcessor,
@@ -104,6 +108,7 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                     }
 
                     var recordsToInsert = new List<PriceRecord>();
+                    IReadOnlyList<LatestPriceResponse> evicted;
 
                     lock (CacheLock)
                     {
@@ -146,11 +151,15 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                             currentDict[safePrice.ProductCode] = safePrice;
                         }
 
+                        evicted = StalePriceEvictor.Evict(currentDict, DateTimeOffset.UtcNow, StaleEvictionAge);
+
                         _snapshotStore.Set(new LatestPricesResponse(
                             Items: currentDict.Values.ToList(),
                             ComputedAtUtc: DateTimeOffset.UtcNow
                         ));
                     }
+
+                    await NotifyStaleEvictedAsync(evicted, stoppingToken);
 
                     if (recordsToInsert.Count > 0)
                     {
@@ -211,6 +220,36 @@ public sealed class PriceSnapshotRefresher : BackgroundService
         }
     }
 
+    private async Task NotifyStaleEvictedAsync(IReadOnlyList<LatestPriceResponse> evicted, CancellationToken stoppingToken)
+    {
+        if (evicted.Count == 0) return;
+
+        var now = DateTimeOffset.UtcNow;
+
+        foreach (var price in evicted)
+        {
+            _logger.LogWarning("Stale price evicted from snapshot: {ProductCode} ({Source}), last update {AgeHours:F0}h ago.",
+                price.ProductCode, price.Source, (now - price.AsOfUtc).TotalHours);
+        }
+
+        const int maxListed = 15;
+        var lines = evicted
+            .OrderBy(p => p.AsOfUtc)
+            .Take(maxListed)
+            .Select(p => $"`{p.ProductCode}` ({p.Source}), last update {FormatAge(now - p.AsOfUtc)} ago");
+
+        var more = evicted.Count > maxListed ? $"\n...and {evicted.Count - maxListed} more." : string.Empty;
+
+        // Anahtar yok: silinen varlık bir daha snapshot'a girmez, tekrar eden bir hata değil tek seferlik bir olay.
+        await _alertService.SendAlertAsync(
+            $"🧹 *Stale Prices Removed*\n`{evicted.Count}` asset(s) had no update for over {(int)StaleEvictionAge.TotalHours}h and were removed from the live snapshot (delisted?):\n{string.Join("\n", lines)}{more}",
+            null,
+            stoppingToken);
+    }
+
+    private static string FormatAge(TimeSpan age)
+        => age.TotalDays >= 1 ? $"{(int)age.TotalDays}d" : $"{(int)age.TotalHours}h";
+
     private async Task NotifyRecoveryIfNeededAsync(Type providerType, CancellationToken stoppingToken)
     {
         if (!_downProviders.TryRemove(providerType, out var outage)) return;
@@ -254,6 +293,7 @@ public sealed class PriceSnapshotRefresher : BackgroundService
             if (verifiedPrices.Count > 0)
             {
                 var recordsToInsert = new List<PriceRecord>();
+                IReadOnlyList<LatestPriceResponse> evicted;
 
                 lock (CacheLock)
                 {
@@ -296,11 +336,15 @@ public sealed class PriceSnapshotRefresher : BackgroundService
                         currentDict[safePrice.ProductCode] = safePrice;
                     }
 
+                    evicted = StalePriceEvictor.Evict(currentDict, DateTimeOffset.UtcNow, StaleEvictionAge);
+
                     _snapshotStore.Set(new LatestPricesResponse(
                         Items: currentDict.Values.ToList(),
                         ComputedAtUtc: DateTimeOffset.UtcNow
                     ));
                 }
+
+                await NotifyStaleEvictedAsync(evicted, stoppingToken);
 
                 if (recordsToInsert.Count > 0)
                 {
