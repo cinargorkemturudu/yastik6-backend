@@ -163,4 +163,46 @@ public class PriceSnapshotRefresherTests
         h.Tracker.GetCurrentSnapshot().Active.Should().NotContainKey("Fallback_FreeCurrencyClient_YahooForexClient");
         h.Store.Current!.Items.Should().Contain(p => p.ProductCode == "USDTRY" && p.Source == "FreeCurrencyAPI");
     }
+
+    [Fact]
+    public async Task StaleAssetInSnapshot_IsEvicted_AndTelegramAlertListsIt()
+    {
+        var h = CreateHarness();
+        h.Outage.IsDown = false;
+
+        var now = DateTimeOffset.UtcNow;
+        h.Store.Set(new LatestPricesResponse(
+            Items: new List<LatestPriceResponse>
+            {
+                // 27 gündür güncellenmeyen, delist olmuş coin
+                Price("QUICK-USD", "Binance") with { Type = "CRYPTO", AsOfUtc = now.AddDays(-27), ValidUntilUtc = now.AddDays(-27).AddMinutes(1) },
+                // Kısa süre önce dolmuş ama hâlâ canlı sayılması gereken kayıt
+                Price("EURTRY", "FreeCurrencyAPI") with { AsOfUtc = now.AddHours(-2), ValidUntilUtc = now.AddHours(-1) },
+            },
+            ComputedAtUtc: now));
+
+        await h.Refresher.StartAsync(CancellationToken.None);
+        var alerts = await h.WaitForAlerts(1);
+        await h.Refresher.StopAsync(CancellationToken.None);
+        h.Services.Dispose();
+
+        alerts.Should().ContainSingle();
+        alerts[0].Should().Contain("Stale Prices Removed").And.Contain("`QUICK-USD`").And.Contain("27d ago").And.NotContain("EURTRY");
+        h.Store.Current!.Items.Select(p => p.ProductCode).Should().BeEquivalentTo("EURTRY", "USDTRY");
+    }
+
+    [Fact]
+    public async Task NothingStale_SendsNoEvictionAlert()
+    {
+        var h = CreateHarness();
+        h.Outage.IsDown = false;
+
+        await h.Refresher.StartAsync(CancellationToken.None);
+        await Task.Delay(500);
+        await h.Refresher.StopAsync(CancellationToken.None);
+        h.Services.Dispose();
+
+        (await h.WaitForAlerts(1)).Should().BeEmpty();
+        h.Store.Current!.Items.Should().ContainSingle(p => p.ProductCode == "USDTRY");
+    }
 }
