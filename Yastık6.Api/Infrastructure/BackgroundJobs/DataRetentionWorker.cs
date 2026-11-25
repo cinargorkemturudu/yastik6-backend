@@ -5,7 +5,7 @@ using Yastık6.Api.Infrastructure.Alerts; // [YENİ] Watchdog
 namespace Yastık6.Api.Infrastructure.BackgroundJobs;
 
 public sealed class DataRetentionWorker(
-    IServiceScopeFactory scopeFactory, 
+    IServiceScopeFactory scopeFactory,
     ILogger<DataRetentionWorker> logger,
     IAlertService alertService) : BackgroundService // [YENİ EKLENDİ]
 {
@@ -21,13 +21,18 @@ public sealed class DataRetentionWorker(
             {
                 await CompressOldDataAsync(stoppingToken);
             }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                // Uygulama kapanıyor (deploy / docker compose down): hata değil, alarm gönderme.
+                break;
+            }
             catch (Exception ex)
             {
                 logger.LogError(ex, "An error occurred during the data compression cycle!");
-                
+
                 // [DÜZELTME]: Sekreterin istediği parmak izi (cacheKey) eklendi!
                 await alertService.SendAlertAsync(
-                    $"🗑️ *VERİTABANI BAKIM HATASI*\nGeçmiş veriler temizlenemedi/sıkıştırılamadı. DB boyutu kontrolsüz büyüyebilir!\nHata: `{ex.Message}`", 
+                    $"🗑️ *VERİTABANI BAKIM HATASI*\nGeçmiş veriler temizlenemedi/sıkıştırılamadı. DB boyutu kontrolsüz büyüyebilir!\nHata: `{ex.Message}`",
                     $"DataRetention_{ex.GetType().Name}", // <- İŞTE EKLENEN SATIR
                     stoppingToken);
             }
@@ -46,7 +51,7 @@ public sealed class DataRetentionWorker(
 
         var weekAgo = now.AddDays(-7);
         var monthAgo = now.AddDays(-30);
-        
+
         var currentChunkStart = monthAgo;
         while (currentChunkStart < weekAgo)
         {
@@ -57,9 +62,9 @@ public sealed class DataRetentionWorker(
             currentChunkStart = currentChunkEnd;
         }
 
-        var fiveYearsAgo = now.AddYears(-5); 
+        var fiveYearsAgo = now.AddYears(-5);
         currentChunkStart = fiveYearsAgo;
-        
+
         while (currentChunkStart < monthAgo)
         {
             var currentChunkEnd = currentChunkStart.AddMonths(1);
@@ -68,15 +73,15 @@ public sealed class DataRetentionWorker(
             await ProcessTimeRangeAsync(repository, currentChunkStart, currentChunkEnd, TimeSpan.FromDays(1), ct);
             currentChunkStart = currentChunkEnd;
         }
-        
+
         logger.LogInformation("Daily database cleanup and compression cycle completed successfully. Memory limits preserved.");
     }
 
     private async Task ProcessTimeRangeAsync(
-        IPriceHistoryRepository repository, 
-        DateTimeOffset start, 
-        DateTimeOffset end, 
-        TimeSpan bucketSize, 
+        IPriceHistoryRepository repository,
+        DateTimeOffset start,
+        DateTimeOffset end,
+        TimeSpan bucketSize,
         CancellationToken ct)
     {
         var oldRecords = await repository.GetPricesBetweenAsync(start, end, ct);
@@ -84,23 +89,23 @@ public sealed class DataRetentionWorker(
         if (oldRecords.Count == 0) return;
 
         var compressedRecords = oldRecords
-            .GroupBy(r => new 
-            { 
-                r.ProductCode, 
-                BucketKey = r.TimestampUtc.Ticks / bucketSize.Ticks 
+            .GroupBy(r => new
+            {
+                r.ProductCode,
+                BucketKey = r.TimestampUtc.Ticks / bucketSize.Ticks
             })
             .Select(g => new PriceRecord
             {
                 Id = Guid.NewGuid(),
                 ProductCode = g.Key.ProductCode,
-                Source = g.First().Source, 
+                Source = g.First().Source,
                 AskPrice = g.Average(r => r.AskPrice),
                 BidPrice = g.Average(r => r.BidPrice),
-                
+
                 // [DÜZELTME 3]: LastPrice verisinin kaybolmasını engelliyoruz!
                 // Gruptaki LastPrice değerlerinin de ortalamasını alıp yeni kayda ekliyoruz.
-                LastPrice = g.Average(r => r.LastPrice), 
-                
+                LastPrice = g.Average(r => r.LastPrice),
+
                 TimestampUtc = new DateTimeOffset(g.Key.BucketKey * bucketSize.Ticks, TimeSpan.Zero)
             })
             .ToList();
@@ -109,9 +114,9 @@ public sealed class DataRetentionWorker(
 
         await repository.AddPriceRecordsAsync(compressedRecords, ct);
         await repository.DeletePriceRecordsAsync(oldRecords, ct);
-        
+
         logger.LogInformation(
-            "[{Start} - {End}]: {OldCount} raw rows deleted, {NewCount} compressed buckets inserted.", 
+            "[{Start} - {End}]: {OldCount} raw rows deleted, {NewCount} compressed buckets inserted.",
             start.ToString("dd/MM/yyyy"), end.ToString("dd/MM/yyyy"), oldRecords.Count, compressedRecords.Count);
     }
 }

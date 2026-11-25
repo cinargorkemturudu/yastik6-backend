@@ -59,6 +59,11 @@ public class HistoryCacheWarmer : BackgroundService
                     range,
                     refreshInterval.TotalMinutes);
             }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                // Uygulama kapanıyor (deploy / docker compose down): hata değil, alarm gönderme.
+                break;
+            }
             catch (Exception ex)
             {
                 _logger.LogError(
