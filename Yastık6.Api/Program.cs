@@ -395,6 +395,12 @@ try
                 }
             }
 
+            var clearedLocks = SqliteMaintenance.ClearStaleMigrationLock(context);
+            if (clearedLocks > 0)
+            {
+                logger.LogWarning("Cleared a stale EF migration lock left by a previous start that was killed.");
+            }
+
             context.Database.Migrate();
             context.Database.ExecuteSqlRaw("PRAGMA journal_mode=WAL;");
 
