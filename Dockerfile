@@ -1,5 +1,5 @@
-﻿# Stage 1: Builder (Belirtilen tam SDK versiyonu)
-FROM mcr.microsoft.com/dotnet/sdk:10.0.100 AS build
+# Stage 1: Builder (Belirtilen tam SDK versiyonu)
+FROM mcr.microsoft.com/dotnet/sdk:11.0.100 AS build
 WORKDIR /src
 
 # Test projesini dahil etmeden sadece ana projenin dosyasını kopyalıyoruz
