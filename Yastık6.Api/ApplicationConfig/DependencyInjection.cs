@@ -151,6 +151,7 @@ public static class DependencyInjection
 
         services.AddHostedService<DailyRolloverService>();
         services.AddHostedService<DataRetentionWorker>();
+        services.AddHostedService<WalCheckpointWorker>();
         services.AddHostedService<HistoryCacheWarmer>();
         services.AddSingleton<IPreviousCloseStore, PreviousCloseStore>();
 
