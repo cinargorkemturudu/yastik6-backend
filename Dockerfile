@@ -1,4 +1,4 @@
-﻿# Stage 1: Builder (Belirtilen tam SDK versiyonu)
+# Stage 1: Builder (Belirtilen tam SDK versiyonu)
 FROM mcr.microsoft.com/dotnet/sdk:10.0.100 AS build
 WORKDIR /src
 
@@ -14,7 +14,7 @@ WORKDIR "/src/Yastık6.Api"
 RUN dotnet publish "Yastık6.Api.csproj" -c Release -o /app/publish /p:UseAppHost=false
 
 # Stage 2: Final (Hafif Runtime)
-FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
+FROM mcr.microsoft.com/dotnet/aspnet:11.0 AS final
 WORKDIR /app
 
 # Derlenen dosyaları 1. aşamadan alıp buraya kopyalıyoruz
