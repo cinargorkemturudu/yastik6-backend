@@ -16,7 +16,8 @@ stages:
 - stage: Deploy
   displayName: 'Deploy to production'
   dependsOn: Test
-  condition: succeeded()
+  # Pull-request and feature-branch builds run the tests only; only main deploys.
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
   jobs:
   - job: SSHDeploy
     pool:
