@@ -82,7 +82,7 @@ dotnet test
 
 Covers mapper correctness (Harem, Yahoo Finance name/type mapping), input validation, and the price pipeline's business rules — flash-crash/zero-price shields, USD/TRY-gated crypto conversion, expired-asset filtering, and a regression test locking in a real bug fix where `ValidUntilUtc` was being overwritten by two different layers after the mappers had already computed it correctly.
 
-CI (`.github/workflows/ci.yml`) runs the full suite on every push and pull request. A separate, opt-in `deploy.yml` workflow rebuilds the production Docker stack over SSH after a green run on `main`.
+CI/CD: GitHub Actions (`.github/workflows/ci.yml`) runs the full suite on every push and pull request. Deployment is an Azure Pipelines run (`azure-pipelines.yml`) on a self-hosted agent: tests first, then an SSH deploy that pulls the code and rebuilds the Docker Compose stack. A failing test blocks the deploy stage entirely.
 
 ## Environment variables
 
