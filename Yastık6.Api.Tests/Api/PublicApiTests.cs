@@ -100,6 +100,17 @@ public class PublicApiTests
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 
+    [Fact]
+    public async Task MobileRoute_WithWrongKeyOfSameLength_Returns401()
+    {
+        using var factory = new PublicApiFactory();
+        var client = factory.CreateClient();
+
+        var response = await client.SendAsync(Get("/api/prices/market", "203.0.113.50", "test-mobile-kez"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
     [Theory]
     [InlineData("Year")]
     [InlineData("All")]

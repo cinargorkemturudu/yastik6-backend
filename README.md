@@ -54,6 +54,17 @@ Each mapper computes its own `ValidUntilUtc` based on market state (open/closed,
 
 All routes under `/api/` require an `X-Mobile-Client-Key` header matching `ApiSettings:MobileClientKey`. `/swagger` is key-gated outside `Development`. Any 2xx response to a route outside `/api/`, `/swagger`, `/health`, `/` fires a Telegram alert — an intentional anomaly-detection tripwire.
 
+## Security model
+
+The mobile client is an app anyone can inspect, so the design assumes its key leaks.
+
+- **The client key is an identifier, not a secret.** `X-Mobile-Client-Key` is compiled into the app, so anyone holding a build can recover it. It filters casual scrapers and gives one value to rotate; it does not authenticate people. The server stores no user data: there are no accounts, and portfolios live on the device.
+- **What an extracted key can reach:** `/api/prices/*`, which is public market data. Responses come from an in-memory snapshot refreshed by a background worker, so a request never calls a price vendor or touches the database.
+- **Key check:** constant-time comparison, so response timing can't reveal how much of a guess was right. A wrong key gets a 401 before any controller runs.
+- **Rate limiting:** a per-IP sliding window of 600 requests/minute on the app routes. It is deliberately generous: the app polls every 10 seconds, and Turkish mobile carriers put many users behind one NAT'd IP, so a tight per-IP limit would lock out legitimate users. The keyless public tier has much stricter per-visitor limits, a shared global ceiling, a Telegram alert when the ceiling is hit, and a kill switch (`PublicApi__Enabled=false`).
+- **Other layers:** Cloudflare in front of nginx; Swagger is key-gated outside Development; provider keys live only in the server's `.env`; a tripwire alerts on any successful response to a route the API doesn't define.
+- **Known limits:** there is no per-install attestation (Apple App Attest / Google Play Integrity), because that needs store developer accounts. Rotating the client key means shipping an app update. Per-install tokens with per-token rate limits are the planned next step.
+
 ## Getting started
 
 Requires the **.NET 10 SDK** and Python 3 (only for the local Harem stub below).

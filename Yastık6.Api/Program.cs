@@ -10,6 +10,7 @@ using Yastık6.Api.Infrastructure.Alerts;
 using Yastık6.Api.Infrastructure.BackgroundJobs;
 using Yastık6.Api.Infrastructure.Persistence;
 using Yastık6.Api.Infrastructure.RateLimiting;
+using Yastık6.Api.Infrastructure.ClientAuth;
 using Yastık6.Api.Controllers;
 
 // Bootstrap Serilog at the earliest possible stage to ensure robust error logging
@@ -358,7 +359,7 @@ try
         }
 
         if (!context.Request.Headers.TryGetValue("X-Mobile-Client-Key", out var extractedApiKey) ||
-            extractedApiKey != expectedApiKey)
+            !ClientKey.Matches(extractedApiKey.ToString(), expectedApiKey))
         {
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             await context.Response.WriteAsync("Unauthorized Client.");
