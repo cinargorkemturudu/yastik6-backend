@@ -1,6 +1,12 @@
 # Yastık6 API
 
+[![CI](https://github.com/cinargorkemturudu/Isolated-Backend-Yastik6/actions/workflows/ci.yml/badge.svg)](https://github.com/cinargorkemturudu/Isolated-Backend-Yastik6/actions/workflows/ci.yml)
+![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 The backend for **Yastık6**, a gold / currency / crypto price tracker. It aggregates live prices from four independent providers, applies anomaly detection before anything reaches a client, and serves a mobile app over a small, static-key-authenticated HTTP API.
+
+**Live demo:** a keyless, read-only tier of the production API is public: [`https://yastik6.net/api/public`](https://yastik6.net/api/public) (endpoint list and Swagger docs). The full project story is in the [portfolio showcase](https://github.com/cinargorkemturudu/Yastik6-Portfolio-Showcase). The Flutter client lives in [Yastik6-Frontend](https://github.com/cinargorkemturudu/Yastik6-Frontend).
 
 ## Stack
 
@@ -50,15 +56,23 @@ All routes under `/api/` require an `X-Mobile-Client-Key` header matching `ApiSe
 
 ## Getting started
 
-Requires the **.NET 10 SDK**.
+Requires the **.NET 10 SDK** and Python 3 (only for the local Harem stub below).
+
+The Harem gold feed is a paid RapidAPI service. To run without a key, use the bundled stub, which serves a small valid Harem payload. The other providers (Yahoo Finance, Binance) need no key.
 
 ```bash
-dotnet restore
-cp .env.example .env   # fill in ApiSettings__MobileClientKey and Harem__ApiKey
+python3 scripts/harem-stub.py &    # fake Harem feed on 127.0.0.1:8765
+
+export ApiSettings__MobileClientKey=demo-key
+export Harem__ApiKey=dummy Harem__MarketPath=/harem_altin/prices/dummy
+export Harem__BaseUrl=http://127.0.0.1:8765 Harem__Host=localhost
+
 dotnet run --project "Yastık6.Api"   # listens on http://0.0.0.0:5179
+
+curl -H "X-Mobile-Client-Key: demo-key" http://localhost:5179/api/prices/market
 ```
 
-Or via Docker: `docker compose up -d --build` (reads the same `.env`).
+For real data, copy `.env.example` to `.env`, fill in your own keys, and load it (`set -a; source .env; set +a`) before `dotnet run`. Docker Compose reads `.env` directly: `docker compose up -d --build`.
 
 ## Testing
 
@@ -68,11 +82,16 @@ dotnet test
 
 Covers mapper correctness (Harem, Yahoo Finance name/type mapping), input validation, and the price pipeline's business rules — flash-crash/zero-price shields, USD/TRY-gated crypto conversion, expired-asset filtering, and a regression test locking in a real bug fix where `ValidUntilUtc` was being overwritten by two different layers after the mappers had already computed it correctly.
 
-CI (`azure-pipelines.yml`) runs the full suite on a Microsoft-hosted agent before deploying; a failing test blocks the deploy stage entirely.
+CI (`.github/workflows/ci.yml`) runs the full suite on every push and pull request. A separate, opt-in `deploy.yml` workflow rebuilds the production Docker stack over SSH after a green run on `main`.
 
 ## Environment variables
 
-Set in `.env` (see `.env.example`); the app throws on startup if either is missing:
+Set in `.env` (see `.env.example`); the app refuses to start without a mobile client key and a Harem market path:
 
 - `ApiSettings__MobileClientKey` — shared secret validated against the frontend's `X-Mobile-Client-Key` header
 - `Harem__ApiKey` — RapidAPI key for the Harem gold-price provider
+- `Harem__MarketPath` — endpoint path from your RapidAPI subscription
+
+## License
+
+[MIT](LICENSE)

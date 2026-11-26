@@ -15,8 +15,9 @@ public sealed class HaremClient(
     ISystemClock clock)
     : BasePriceClient(logger, tracker, clock)
 {
-    private readonly string _marketPath = config["Harem:MarketPath"]
-                      ?? throw new InvalidOperationException("Harem:MarketPath konfigürasyonu eksik!");
+    private readonly string _marketPath = config["Harem:MarketPath"] is { Length: > 0 } path
+        ? path
+        : throw new InvalidOperationException("Harem:MarketPath konfigürasyonu eksik!");
 
     public override string ProviderName => "Harem";
 
