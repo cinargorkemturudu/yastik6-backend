@@ -1,12 +1,12 @@
 # Yastık6 API
 
-[![CI](https://github.com/cinargorkemturudu/Isolated-Backend-Yastik6/actions/workflows/ci.yml/badge.svg)](https://github.com/cinargorkemturudu/Isolated-Backend-Yastik6/actions/workflows/ci.yml)
+[![CI](https://github.com/cinargorkemturudu/yastik6-backend/actions/workflows/ci.yml/badge.svg)](https://github.com/cinargorkemturudu/yastik6-backend/actions/workflows/ci.yml)
 ![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 The backend for **Yastık6**, a gold / currency / crypto price tracker. It aggregates live prices from four independent providers, applies anomaly detection before anything reaches a client, and serves a mobile app over a small, static-key-authenticated HTTP API.
 
-**Live demo:** a keyless, read-only tier of the production API is public: [`https://yastik6.net/api/public`](https://yastik6.net/api/public) (endpoint list and Swagger docs). The full project story is in the [portfolio showcase](https://github.com/cinargorkemturudu/Yastik6-Portfolio-Showcase). The Flutter client lives in [Yastik6-Frontend](https://github.com/cinargorkemturudu/Yastik6-Frontend).
+**Live demo:** a keyless, read-only tier of the production API is public: [`https://yastik6.net/api/public`](https://yastik6.net/api/public) (endpoint list and Swagger docs). The full project story is in the [portfolio showcase](https://github.com/cinargorkemturudu/Yastik6-Portfolio-Showcase). The Flutter client lives in [yastik6-app](https://github.com/cinargorkemturudu/yastik6-app).
 
 ## Stack
 
